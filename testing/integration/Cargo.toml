@@ -36,7 +36,9 @@ rocksdb.workspace = true
 database.workspace = true
 utxoindex.workspace = true
 kaspa-index-processor.workspace = true
+libkaspawallet = { path = "../../libkaspawallet" }
 
+bip32 = "0.4.0"
 crossbeam-channel = "0.5"
 async-channel = "1.8.0"
 secp256k1 = { version = "0.24", features = ["global-context", "rand-std"] }

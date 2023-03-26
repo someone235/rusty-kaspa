@@ -1,0 +1,13 @@
+[package]
+name = "libkaspawallet"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+include.workspace = true
+license.workspace = true
+
+[dependencies]
+consensus-core.workspace = true
+txscript.workspace = true
+
+bip32 = "0.4.0"

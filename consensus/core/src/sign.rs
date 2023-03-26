@@ -3,7 +3,7 @@ use crate::{
         sighash::{calc_schnorr_signature_hash, SigHashReusedValues},
         sighash_type::SIG_HASH_ALL,
     },
-    tx::SignableTransaction,
+    tx::{SignableTransaction, VerifiableTransaction},
 };
 
 /// Sign a transaction using schnorr
@@ -22,4 +22,20 @@ pub fn sign(mut signable_tx: SignableTransaction, privkey: [u8; 32]) -> Signable
         signable_tx.tx.inputs[i].signature_script = std::iter::once(65u8).chain(sig).chain([SIG_HASH_ALL.to_u8()]).collect();
     }
     signable_tx
+}
+
+pub fn raw_schnorr_input_signature(
+    verifiable_tx: &impl VerifiableTransaction,
+    privkey: [u8; 32],
+    input_idx: usize,
+    reused_values: &mut SigHashReusedValues,
+) -> [u8; 65] {
+    let schnorr_key = secp256k1::KeyPair::from_seckey_slice(secp256k1::SECP256K1, &privkey).unwrap();
+    let sig_hash = calc_schnorr_signature_hash(verifiable_tx, input_idx, SIG_HASH_ALL, reused_values);
+    let msg = secp256k1::Message::from_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let mut input_sig = [0u8; 65];
+    let (sig_part, sig_hash_type_part) = input_sig.split_at_mut(64);
+    sig_part.copy_from_slice(schnorr_key.sign_schnorr(msg).as_ref());
+    sig_hash_type_part[0] = SIG_HASH_ALL.0;
+    input_sig
 }

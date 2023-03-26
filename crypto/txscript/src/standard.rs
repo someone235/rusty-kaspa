@@ -11,14 +11,14 @@ use std::iter::once;
 use txscript_errors::TxScriptError;
 
 /// Creates a new script to pay a transaction output to a 32-byte pubkey.
-fn pay_to_pub_key(address_payload: &[u8]) -> ScriptVec {
+pub fn pay_to_pub_key(pub_key: &[u8]) -> ScriptVec {
     // TODO: use ScriptBuilder when add_op and add_data fns or equivalents are available
-    assert_eq!(address_payload.len(), 32);
-    SmallVec::from_iter(once(OpData32).chain(address_payload.iter().copied()).chain(once(OpCheckSig)))
+    assert_eq!(pub_key.len(), 32); // TODO: We can convert pub_key to array
+    SmallVec::from_iter(once(OpData32).chain(pub_key.iter().copied()).chain(once(OpCheckSig)))
 }
 
 /// Creates a new script to pay a transaction output to a 33-byte ECDSA pubkey.
-fn pay_to_pub_key_ecdsa(address_payload: &[u8]) -> ScriptVec {
+pub fn pay_to_pub_key_ecdsa(address_payload: &[u8]) -> ScriptVec {
     // TODO: use ScriptBuilder when add_op and add_data fns or equivalents are available
     assert_eq!(address_payload.len(), 33);
     SmallVec::from_iter(once(OpData33).chain(address_payload.iter().copied()).chain(once(OpCheckSigECDSA)))
@@ -26,7 +26,7 @@ fn pay_to_pub_key_ecdsa(address_payload: &[u8]) -> ScriptVec {
 
 /// Creates a new script to pay a transaction output to a script hash.
 /// It is expected that the input is a valid hash.
-fn pay_to_script_hash(script_hash: &[u8]) -> ScriptVec {
+pub fn pay_to_script_hash(script_hash: &[u8]) -> ScriptVec {
     // TODO: use ScriptBuilder when add_op and add_data fns or equivalents are available
     assert_eq!(script_hash.len(), 32);
     SmallVec::from_iter([OpBlake2b, OpData32].iter().copied().chain(script_hash.iter().copied()).chain(once(OpEqual)))

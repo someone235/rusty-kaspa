@@ -13,7 +13,7 @@ use consensus_core::{
     header::Header,
     merkle::calc_hash_merkle_root,
     subnets::SUBNETWORK_ID_COINBASE,
-    tx::Transaction,
+    tx::{ScriptPublicKey, Transaction},
     BlockHashSet,
 };
 use consensus_notify::{notification::Notification, root::ConsensusNotificationRoot};
@@ -104,17 +104,53 @@ impl TestConsensus {
         self.validate_and_insert_block(self.build_block_with_parents(hash, parents).to_immutable())
     }
 
-    pub fn build_block_with_parents_and_transactions(
+    pub fn add_block_with_parents_and_transactions(
+        &self,
+        hash: Hash,
+        parents: Vec<Hash>,
+        txs: Vec<Transaction>,
+    ) -> impl Future<Output = BlockProcessResult<BlockStatus>> {
+        self.validate_and_insert_block(
+            self.build_block_with_parents_and_transactions_with_custom_miner_pub_key(hash, parents, txs, None).to_immutable(),
+        )
+    }
+
+    pub fn add_block_with_parents_and_transactions_with_custom_miner_pub_key(
+        &self,
+        hash: Hash,
+        parents: Vec<Hash>,
+        txs: Vec<Transaction>,
+        miner_script_pub_key: Option<ScriptPublicKey>,
+    ) -> impl Future<Output = BlockProcessResult<BlockStatus>> {
+        self.validate_and_insert_block(
+            self.build_block_with_parents_and_transactions_with_custom_miner_pub_key(hash, parents, txs, miner_script_pub_key)
+                .to_immutable(),
+        )
+    }
+
+    pub fn build_block_with_parents_and_transactions(&self, hash: Hash, parents: Vec<Hash>, txs: Vec<Transaction>) -> MutableBlock {
+        self.build_block_with_parents_and_transactions_with_custom_miner_pub_key(hash, parents, txs, None)
+    }
+
+    pub fn build_block_with_parents_and_transactions_with_custom_miner_pub_key(
         &self,
         hash: Hash,
         parents: Vec<Hash>,
         mut txs: Vec<Transaction>,
+        miner_script_pub_key: Option<ScriptPublicKey>,
     ) -> MutableBlock {
         let mut header = self.build_header_with_parents(hash, parents);
+        let miner_script_pub_key = match miner_script_pub_key {
+            Some(miner_script_pub_key) => miner_script_pub_key,
+            None => ScriptPublicKey::new(TX_VERSION, Default::default()),
+        };
+
+        let script_pub_key_len: u8 = miner_script_pub_key.script().len().try_into().unwrap();
         let cb_payload: Vec<u8> = header.blue_score.to_le_bytes().iter().copied() // Blue score
             .chain(self.consensus.coinbase_manager.calc_block_subsidy(header.daa_score).to_le_bytes().iter().copied()) // Subsidy
-            .chain((0_u16).to_le_bytes().iter().copied()) // Script public key version
-            .chain((0_u8).to_le_bytes().iter().copied()) // Script public key length
+            .chain(miner_script_pub_key.version().to_le_bytes()) // Script public key version
+            .chain(script_pub_key_len.to_le_bytes()) // Script public key length
+            .chain(miner_script_pub_key.script().iter().copied())
             .collect();
 
         let cb = Transaction::new(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_COINBASE, 0, cb_payload);
