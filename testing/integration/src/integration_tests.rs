@@ -3,6 +3,7 @@
 //!
 
 use async_channel::unbounded;
+use bip32::{Mnemonic, XPrv};
 use consensus::config::{Config, ConfigBuilder};
 use consensus::consensus::test_consensus::{create_temp_db, TestConsensus};
 use consensus::model::stores::ghostdag::{GhostdagStoreReader, KType as GhostdagKType};
@@ -15,7 +16,8 @@ use consensus_core::api::ConsensusApi;
 use consensus_core::block::Block;
 use consensus_core::blockhash::new_unique;
 use consensus_core::blockstatus::BlockStatus;
-use consensus_core::constants::BLOCK_VERSION;
+use consensus_core::coinbase::MinerData;
+use consensus_core::constants::{BLOCK_VERSION, MAX_TX_IN_SEQUENCE_NUM};
 use consensus_core::errors::block::{BlockProcessResult, RuleError};
 use consensus_core::header::Header;
 use consensus_core::subnets::SubnetworkId;
@@ -33,8 +35,11 @@ use kaspa_core::info;
 use kaspa_core::signals::Shutdown;
 use kaspa_core::task::runtime::AsyncRuntime;
 use kaspa_index_processor::service::IndexService;
+use libkaspawallet::sign::extract_transaction;
+use libkaspawallet::{sign::sign, InputMetaData, PartiallySignedTx, PubKeySigPair, KPUB};
 use math::Uint256;
 use muhash::MuHash;
+use secp256k1::Secp256k1;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -48,6 +53,7 @@ use std::{
     str::{from_utf8, FromStr},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use txscript::pay_to_pub_key;
 use utxoindex::api::UtxoIndexApi;
 use utxoindex::UtxoIndex;
 
@@ -1473,6 +1479,92 @@ async fn selected_chain_test() {
     assert_eq!(consensus.header_processor.selected_chain_store.read().get_by_index(1).unwrap(), 22.into()); // We expect 23's selected parent to be 22 because of GHOSTDAG tie breaer rules.
     assert_eq!(consensus.header_processor.selected_chain_store.read().get_by_index(2).unwrap(), 23.into());
     assert!(consensus.header_processor.selected_chain_store.read().get_by_index(3).is_err());
+
+    consensus.shutdown(wait_handles);
+}
+
+#[tokio::test]
+async fn kaspawallet_sign_test() {
+    let mut config = ConfigBuilder::new(MAINNET_PARAMS).skip_proof_of_work().build();
+    config.params.coinbase_maturity = 0;
+    let consensus = TestConsensus::create_from_temp_db_and_dummy_sender(&config);
+    let wait_handles = consensus.init();
+
+    // Generate random Mnemonic using the default language (English)
+    let mnemonic = Mnemonic::random(&mut rand::thread_rng(), Default::default());
+
+    // Derive a BIP39 seed value using the given password
+    let seed = mnemonic.to_seed("password");
+    let root_xprv = XPrv::new(&seed).unwrap();
+    let child_path = "m/0/2147483647'/1/2147483646'";
+    let child_xprv = XPrv::derive_from_path(&seed, &child_path.parse().unwrap()).unwrap();
+    let child_xpub = child_xprv.public_key();
+    let ecdsa_pub_key = child_xpub.public_key().to_bytes();
+    let schnorr_pub_key = &ecdsa_pub_key[1..]; // TODO: Make some wrapper that'll take care of it
+
+    let script_pub_key_script = pay_to_pub_key(schnorr_pub_key);
+    let script_pub_key = ScriptPublicKey::new(0, script_pub_key_script);
+
+    let block1 = consensus
+        .build_block_template(MinerData { script_public_key: script_pub_key.clone(), extra_data: vec![] }, vec![])
+        .unwrap()
+        .block
+        .to_immutable();
+    consensus.validate_and_insert_block(block1).await.unwrap();
+
+    let funding_block = consensus
+        .build_block_template(MinerData { script_public_key: script_pub_key.clone(), extra_data: vec![] }, vec![])
+        .unwrap()
+        .block
+        .to_immutable();
+    let funding_tx = funding_block.transactions[0].clone();
+    consensus.validate_and_insert_block(funding_block).await.unwrap();
+    let tx = Transaction::new(
+        0,
+        vec![TransactionInput {
+            previous_outpoint: TransactionOutpoint { transaction_id: funding_tx.id(), index: 0 },
+            signature_script: vec![],
+            sequence: MAX_TX_IN_SEQUENCE_NUM,
+            sig_op_count: 0,
+        }],
+        vec![],
+        0,
+        Default::default(),
+        0,
+        vec![],
+    );
+
+    let mut pstx = PartiallySignedTx::new(
+        tx,
+        vec![InputMetaData {
+            min_signatures: 1,
+            pub_key_sig_pairs: vec![PubKeySigPair { extended_pubkey: child_xpub.to_string(KPUB), signature: None }],
+            derivation_path: "m/0/2147483647'/1/2147483646'".into(),
+            utxo_entry: UtxoEntry {
+                amount: funding_tx.outputs[0].value,
+                script_public_key: funding_tx.outputs[0].script_public_key.clone(),
+                block_daa_score: 0, // Fake value
+                is_coinbase: true,
+            },
+        }],
+    );
+
+    sign(root_xprv, &mut pstx, false, KPUB);
+    let tx = extract_transaction(&mut pstx, false);
+
+    assert_eq!(
+        consensus
+            .validate_and_insert_block(
+                consensus
+                    .build_block_template(MinerData { script_public_key: script_pub_key, extra_data: vec![] }, vec![tx.clone()])
+                    .unwrap()
+                    .block
+                    .to_immutable()
+            )
+            .await
+            .unwrap(),
+        BlockStatus::StatusUTXOValid
+    );
 
     consensus.shutdown(wait_handles);
 }
