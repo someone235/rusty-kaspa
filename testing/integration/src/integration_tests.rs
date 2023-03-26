@@ -39,7 +39,6 @@ use libkaspawallet::sign::extract_transaction;
 use libkaspawallet::{sign::sign, InputMetaData, PartiallySignedTx, PubKeySigPair, KPUB};
 use math::Uint256;
 use muhash::MuHash;
-use secp256k1::Secp256k1;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashSet;
