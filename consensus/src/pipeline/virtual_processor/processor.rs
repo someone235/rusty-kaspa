@@ -304,7 +304,7 @@ impl VirtualStateProcessor {
 
         let split_point = split_point.expect("chain iterator was expected to reach the reorg split point");
         debug!("resolve_virtual found split point: {split_point}");
-
+AAAAAAAAAAAAA
         // Walk back up to the new virtual selected parent candidate
         let mut last_log_index = 0;
         let mut last_log_time = SystemTime::now();
