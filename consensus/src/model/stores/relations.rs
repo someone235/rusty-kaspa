@@ -27,12 +27,30 @@ pub trait RelationsStoreReader {
     fn counts(&self) -> Result<(usize, usize), StoreError>;
 }
 
+impl<T: RelationsStoreReader> RelationsStoreReader for &T {
+    fn get_parents(&self, hash: Hash) -> Result<BlockHashes, StoreError> {
+        (*self).get_parents(hash)
+    }
+
+    fn get_children(&self, hash: Hash) -> StoreResult<ReadLock<BlockHashSet>> {
+        (*self).get_children(hash)
+    }
+
+    fn has(&self, hash: Hash) -> Result<bool, StoreError> {
+        (*self).has(hash)
+    }
+
+    fn counts(&self) -> Result<(usize, usize), StoreError> {
+        (*self).counts()
+    }
+}
+
 /// Low-level write API for `RelationsStore`
 pub trait RelationsStore: RelationsStoreReader {
     type DefaultWriter: DirectWriter;
     fn default_writer(&self) -> Self::DefaultWriter;
 
-    fn set_parents(&self, writer: impl DbWriter, hash: Hash, parents: BlockHashes) -> Result<(), StoreError>;
+    fn set_parents(&mut self, writer: impl DbWriter, hash: Hash, parents: BlockHashes) -> Result<(), StoreError>;
     fn delete_entries(&mut self, writer: impl DbWriter, hash: Hash) -> Result<(), StoreError>;
 }
 
@@ -94,17 +112,17 @@ impl RelationsStoreReader for DbRelationsStore {
     }
 }
 
-impl ChildrenStore for DbRelationsStore {
-    fn insert_child(&self, writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
-        self.children_store.insert_child(writer, parent, child)
+impl ChildrenStore for &DbRelationsStore {
+    fn insert_child(&mut self, writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
+        (&self.children_store).insert_child(writer, parent, child)
     }
 
-    fn delete_children(&self, writer: impl DbWriter, parent: Hash) -> Result<(), StoreError> {
-        self.children_store.delete_children(writer, parent)
+    fn delete_children(&mut self, writer: impl DbWriter, parent: Hash) -> Result<(), StoreError> {
+        (&self.children_store).delete_children(writer, parent)
     }
 
-    fn delete_child(&self, writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
-        self.children_store.delete_child(writer, parent, child)
+    fn delete_child(&mut self, writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
+        (&self.children_store).delete_child(writer, parent, child)
     }
 }
 
@@ -115,13 +133,30 @@ impl RelationsStore for DbRelationsStore {
         DirectDbWriter::from_arc(self.db.clone())
     }
 
-    fn set_parents(&self, writer: impl DbWriter, hash: Hash, parents: BlockHashes) -> Result<(), StoreError> {
+    fn set_parents(&mut self, writer: impl DbWriter, hash: Hash, parents: BlockHashes) -> Result<(), StoreError> {
         self.parents_access.write(writer, hash, parents)
     }
 
     fn delete_entries(&mut self, mut writer: impl DbWriter, hash: Hash) -> Result<(), StoreError> {
         self.parents_access.delete(&mut writer, hash)?;
-        self.children_store.delete_children(&mut writer, hash)
+        (&self.children_store).delete_children(&mut writer, hash)
+    }
+}
+
+impl RelationsStore for &DbRelationsStore {
+    type DefaultWriter = DirectDbWriter<'static>;
+
+    fn default_writer(&self) -> Self::DefaultWriter {
+        DirectDbWriter::from_arc(self.db.clone())
+    }
+
+    fn set_parents(&mut self, writer: impl DbWriter, hash: Hash, parents: BlockHashes) -> Result<(), StoreError> {
+        self.parents_access.write(writer, hash, parents)
+    }
+
+    fn delete_entries(&mut self, mut writer: impl DbWriter, hash: Hash) -> Result<(), StoreError> {
+        self.parents_access.delete(&mut writer, hash)?;
+        (&self.children_store).delete_children(&mut writer, hash)
     }
 }
 
@@ -147,7 +182,7 @@ pub struct StagingRelationsStore<'a> {
 }
 
 impl<'a> ChildrenStore for StagingRelationsStore<'a> {
-    fn insert_child(&self, _writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
+    fn insert_child(&mut self, _writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
         self.check_not_in_children_delete_all(parent);
         let mut write_guard = self.staging.borrow_mut();
         match write_guard.children.insertions.entry(parent) {
@@ -161,13 +196,13 @@ impl<'a> ChildrenStore for StagingRelationsStore<'a> {
         Ok(())
     }
 
-    fn delete_children(&self, _writer: impl DbWriter, parent: Hash) -> Result<(), StoreError> {
+    fn delete_children(&mut self, _writer: impl DbWriter, parent: Hash) -> Result<(), StoreError> {
         let mut write_guard = self.staging.borrow_mut();
         write_guard.children.delete_all_children.insert(parent);
         Ok(())
     }
 
-    fn delete_child(&self, _writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
+    fn delete_child(&mut self, _writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
         self.check_not_in_children_delete_all(parent);
         let mut write_guard = self.staging.borrow_mut();
         match write_guard.children.insertions.entry(parent) {
@@ -205,7 +240,7 @@ impl<'a> StagingRelationsStore<'a> {
         Self { store, staging: Default::default() }
     }
 
-    pub fn commit(self, batch: &mut WriteBatch) -> Result<(), StoreError> {
+    pub fn commit(mut self, batch: &mut WriteBatch) -> Result<(), StoreError> {
         let read_guard = self.staging.borrow();
         for (k, v) in read_guard.parents_insertions.iter() {
             self.store.parents_access.write(BatchDbWriter::new(batch), *k, (*v).clone())?
@@ -215,7 +250,7 @@ impl<'a> StagingRelationsStore<'a> {
             read_guard.children.insertions.iter().filter(|(parent, _)| !read_guard.children.delete_all_children.contains(parent))
         {
             for child in children.iter().copied() {
-                self.store.children_store.insert_child(BatchDbWriter::new(batch), *parent, child)?;
+                self.store.insert_child(BatchDbWriter::new(batch), *parent, child)?;
             }
         }
         // Deletions always come after mutations
@@ -257,7 +292,7 @@ impl RelationsStore for StagingRelationsStore<'_> {
         MemoryWriter
     }
 
-    fn set_parents(&self, _writer: impl DbWriter, hash: Hash, parents: BlockHashes) -> Result<(), StoreError> {
+    fn set_parents(&mut self, _writer: impl DbWriter, hash: Hash, parents: BlockHashes) -> Result<(), StoreError> {
         self.staging.borrow_mut().parents_insertions.insert(hash, parents);
         Ok(())
     }
@@ -334,7 +369,7 @@ struct MemoryRelationsStoreInner {
 }
 
 impl ChildrenStore for MemoryRelationsStore {
-    fn insert_child(&self, _writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
+    fn insert_child(&mut self, _writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
         let mut write_guard = self.0.borrow_mut();
         let mut children = match write_guard.children_map.get(&parent) {
             Some(children) => children.iter().copied().collect_vec(),
@@ -346,12 +381,12 @@ impl ChildrenStore for MemoryRelationsStore {
         Ok(())
     }
 
-    fn delete_children(&self, _writer: impl DbWriter, parent: Hash) -> Result<(), StoreError> {
+    fn delete_children(&mut self, _writer: impl DbWriter, parent: Hash) -> Result<(), StoreError> {
         self.0.borrow_mut().children_map.remove(&parent);
         Ok(())
     }
 
-    fn delete_child(&self, _writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
+    fn delete_child(&mut self, _writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
         let mut write_guard = self.0.borrow_mut();
         let mut children = match write_guard.children_map.get(&parent) {
             Some(children) => children.iter().copied().collect_vec(),
@@ -416,7 +451,7 @@ impl RelationsStore for MemoryRelationsStore {
         MemoryWriter
     }
 
-    fn set_parents(&self, _writer: impl DbWriter, hash: Hash, parents: BlockHashes) -> Result<(), StoreError> {
+    fn set_parents(&mut self, _writer: impl DbWriter, hash: Hash, parents: BlockHashes) -> Result<(), StoreError> {
         self.0.borrow_mut().parents_map.insert(hash, parents);
         Ok(())
     }
@@ -443,11 +478,11 @@ mod tests {
     #[test]
     fn test_db_relations_store() {
         let (lt, db) = create_temp_db!(kaspa_database::prelude::ConnBuilder::default().with_files_limit(10));
-        test_relations_store(DbRelationsStore::new(db, 0, 2));
+        test_relations_store(&DbRelationsStore::new(db, 0, 2));
         drop(lt)
     }
 
-    fn test_relations_store<T: RelationsStore + ChildrenStore>(store: T) {
+    fn test_relations_store<T: RelationsStore + ChildrenStore>(mut store: T) {
         let parents = [(1, vec![]), (2, vec![1]), (3, vec![1]), (4, vec![2, 3]), (5, vec![1, 4])];
         for (i, vec) in parents.iter().cloned() {
             store.insert(i.into(), BlockHashes::new(vec.iter().copied().map(Hash::from).collect())).unwrap();
