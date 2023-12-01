@@ -9,7 +9,6 @@ use kaspa_database::prelude::{StoreResult, DB};
 use kaspa_database::registry::{DatabaseStorePrefixes, SEPARATOR};
 use kaspa_hashes::Hash;
 use rocksdb::WriteBatch;
-use std::cell::RefCell;
 use std::collections::hash_map::Entry;
 use std::collections::HashSet;
 use std::iter::once;
@@ -341,38 +340,37 @@ impl RelationsStoreReader for StagingRelationsStore<'_> {
     }
 }
 
-pub struct MemoryRelationsStore(RefCell<MemoryRelationsStoreInner>); // Because ChildrenStore and RelationsStore doesn't use `&mut self` in its methods,
-                                                                     // MemoryRelationsStore cannot implement it while using `&mut self`, so we need
-                                                                     // to wrap `MemoryRelationsStoreInner` with RefCell. This is safe because  `MemoryRelationsStore`
-                                                                     // doesn't have multiple mutable references anywhere it's used.
-
 #[derive(Default)]
-struct MemoryRelationsStoreInner {
+pub struct MemoryRelationsStore {
     parents_map: BlockHashMap<BlockHashes>,
     children_map: BlockHashMap<BlockHashes>,
 }
 
+impl MemoryRelationsStore {
+    pub fn new() -> Self {
+        Default::default()
+    }
+}
+
 impl ChildrenStore for MemoryRelationsStore {
     fn insert_child(&mut self, _writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
-        let mut write_guard = self.0.borrow_mut();
-        let mut children = match write_guard.children_map.get(&parent) {
+        let mut children = match self.children_map.get(&parent) {
             Some(children) => children.iter().copied().collect_vec(),
             None => vec![],
         };
 
         children.push(child);
-        write_guard.children_map.insert(parent, children.into());
+        self.children_map.insert(parent, children.into());
         Ok(())
     }
 
     fn delete_children(&mut self, _writer: impl DbWriter, parent: Hash) -> Result<(), StoreError> {
-        self.0.borrow_mut().children_map.remove(&parent);
+        self.children_map.remove(&parent);
         Ok(())
     }
 
     fn delete_child(&mut self, _writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
-        let mut write_guard = self.0.borrow_mut();
-        let mut children = match write_guard.children_map.get(&parent) {
+        let mut children = match self.children_map.get(&parent) {
             Some(children) => children.iter().copied().collect_vec(),
             None => vec![],
         };
@@ -382,26 +380,14 @@ impl ChildrenStore for MemoryRelationsStore {
         };
 
         children.remove(to_remove_idx);
-        write_guard.children_map.insert(parent, children.into());
+        self.children_map.insert(parent, children.into());
         Ok(())
-    }
-}
-
-impl MemoryRelationsStore {
-    pub fn new() -> Self {
-        Self(Default::default())
-    }
-}
-
-impl Default for MemoryRelationsStore {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
 impl RelationsStoreReader for MemoryRelationsStore {
     fn get_parents(&self, hash: Hash) -> Result<BlockHashes, StoreError> {
-        match self.0.borrow().parents_map.get(&hash) {
+        match self.parents_map.get(&hash) {
             Some(parents) => Ok(BlockHashes::clone(parents)),
             None => Err(StoreError::KeyNotFound(DbKey::new(DatabaseStorePrefixes::RelationsParents.as_ref(), hash))),
         }
@@ -411,7 +397,7 @@ impl RelationsStoreReader for MemoryRelationsStore {
         if !self.has(hash)? {
             Err(StoreError::KeyNotFound(DbKey::new(DatabaseStorePrefixes::RelationsChildren.as_ref(), hash)))
         } else {
-            match self.0.borrow().children_map.get(&hash) {
+            match self.children_map.get(&hash) {
                 Some(children) => Ok(BlockHashSet::from_iter(children.iter().copied()).into()),
                 None => Ok(Default::default()),
             }
@@ -419,11 +405,11 @@ impl RelationsStoreReader for MemoryRelationsStore {
     }
 
     fn has(&self, hash: Hash) -> Result<bool, StoreError> {
-        Ok(self.0.borrow().parents_map.contains_key(&hash))
+        Ok(self.parents_map.contains_key(&hash))
     }
 
     fn counts(&self) -> Result<(usize, usize), StoreError> {
-        let count = self.0.borrow().parents_map.len();
+        let count = self.parents_map.len();
         Ok((count, count))
     }
 }
@@ -436,14 +422,13 @@ impl RelationsStore for MemoryRelationsStore {
     }
 
     fn set_parents(&mut self, _writer: impl DbWriter, hash: Hash, parents: BlockHashes) -> Result<(), StoreError> {
-        self.0.borrow_mut().parents_map.insert(hash, parents);
+        self.parents_map.insert(hash, parents);
         Ok(())
     }
 
     fn delete_entries(&mut self, _writer: impl DbWriter, hash: Hash) -> Result<(), StoreError> {
-        let mut write_guard = self.0.borrow_mut();
-        write_guard.parents_map.remove(&hash);
-        write_guard.children_map.remove(&hash);
+        self.parents_map.remove(&hash);
+        self.children_map.remove(&hash);
         Ok(())
     }
 }
