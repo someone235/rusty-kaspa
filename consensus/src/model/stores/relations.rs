@@ -111,6 +111,10 @@ impl RelationsStoreReader for DbRelationsStore {
     }
 }
 
+/// We impl the trait on the store *reference* (and not over the store itself)
+/// since its methods are defined as `&mut self` however callers do not need to pass an
+/// actual `&mut store` since the Db store is thread-safe. By implementing on the reference
+/// the caller can now pass `&mut &store` which is always available locally
 impl ChildrenStore for &DbRelationsStore {
     fn insert_child(&mut self, writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
         (&self.children_store).insert_child(writer, parent, child)
@@ -125,23 +129,7 @@ impl ChildrenStore for &DbRelationsStore {
     }
 }
 
-impl RelationsStore for DbRelationsStore {
-    type DefaultWriter = DirectDbWriter<'static>;
-
-    fn default_writer(&self) -> Self::DefaultWriter {
-        DirectDbWriter::from_arc(self.db.clone())
-    }
-
-    fn set_parents(&mut self, writer: impl DbWriter, hash: Hash, parents: BlockHashes) -> Result<(), StoreError> {
-        self.parents_access.write(writer, hash, parents)
-    }
-
-    fn delete_entries(&mut self, mut writer: impl DbWriter, hash: Hash) -> Result<(), StoreError> {
-        self.parents_access.delete(&mut writer, hash)?;
-        (&self.children_store).delete_children(&mut writer, hash)
-    }
-}
-
+/// The comment above over `impl ChildrenStore` applies here as well
 impl RelationsStore for &DbRelationsStore {
     type DefaultWriter = DirectDbWriter<'static>;
 
