@@ -111,10 +111,13 @@ impl RelationsStoreReader for DbRelationsStore {
     }
 }
 
-/// We impl the trait on the store *reference* (and not over the store itself)
+/// NOTE: we impl the trait on the store *reference* (and not over the store itself)
 /// since its methods are defined as `&mut self` however callers do not need to pass an
 /// actual `&mut store` since the Db store is thread-safe. By implementing on the reference
-/// the caller can now pass `&mut &store` which is always available locally
+/// the caller can now pass `&mut &store` which is always available locally.
+///
+/// The trait methods itself must remain `&mut self` in order to support staging implementations
+/// which are indeed mutated locally
 impl ChildrenStore for &DbRelationsStore {
     fn insert_child(&mut self, writer: impl DbWriter, parent: Hash, child: Hash) -> Result<(), StoreError> {
         (&self.children_store).insert_child(writer, parent, child)
