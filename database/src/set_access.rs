@@ -1,13 +1,15 @@
-use crate::{db::DB, errors::StoreError};
+use crate::{
+    db::DB,
+    errors::StoreError,
+    set_cache::{ReadLock, SetCache},
+};
 
-use super::prelude::{Cache, DbKey, DbWriter};
-use parking_lot::{RwLock, RwLockReadGuard};
+use super::prelude::{DbKey, DbWriter};
 use rocksdb::{IteratorMode, ReadOptions};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     collections::{hash_map::RandomState, HashSet},
     error::Error,
-    fmt::Debug,
     hash::BuildHasher,
     sync::Arc,
 };
@@ -17,72 +19,45 @@ use std::{
 pub struct CachedDbSetAccess<TKey, TData, S = RandomState, W = RandomState>
 where
     TKey: Clone + std::hash::Hash + Eq + Send + Sync,
-    TData: Clone + Send + Sync,
+    TData: Clone + Send + Sync + std::hash::Hash + Eq,
     W: Send + Sync,
 {
     db: Arc<DB>,
 
     // Cache
-    cache: Cache<TKey, Arc<RwLock<HashSet<TData, W>>>, S>,
+    cache: SetCache<TKey, TData, S, W>,
 
     // DB bucket/path
     prefix: Vec<u8>,
-}
-
-#[derive(Default, Debug)]
-pub struct ReadLock<T>(Arc<RwLock<T>>);
-
-impl<T> ReadLock<T> {
-    pub fn new(rwlock: Arc<RwLock<T>>) -> Self {
-        Self(rwlock)
-    }
-
-    pub fn read(&self) -> RwLockReadGuard<T> {
-        self.0.read()
-    }
-}
-
-impl<T> From<T> for ReadLock<T> {
-    fn from(value: T) -> Self {
-        Self::new(Arc::new(RwLock::new(value)))
-    }
 }
 
 impl<TKey, TData, S, W> CachedDbSetAccess<TKey, TData, S, W>
 where
     TKey: Clone + std::hash::Hash + Eq + Send + Sync + AsRef<[u8]>,
     TData: Clone + std::hash::Hash + Eq + Send + Sync + DeserializeOwned + Serialize,
-    S: BuildHasher + Default,
+    S: BuildHasher + Default + Send + Sync,
     W: BuildHasher + Default + Send + Sync,
 {
     pub fn new(db: Arc<DB>, cache_size: u64, prefix: Vec<u8>) -> Self {
-        Self { db, cache: Cache::new(cache_size), prefix }
+        Self { db, cache: SetCache::new(cache_size), prefix }
     }
 
     pub fn read_from_cache(&self, key: TKey) -> Option<ReadLock<HashSet<TData, W>>> {
-        let set = self.cache.get(&key)?.clone();
-        Some(ReadLock::new(set))
+        self.cache.get(&key)
     }
 
-    fn get_locked_data(&self, key: TKey) -> Result<Arc<RwLock<HashSet<TData, W>>>, StoreError> {
+    pub fn read(&self, key: TKey) -> Result<ReadLock<HashSet<TData, W>>, StoreError> {
         if let Some(data) = self.cache.get(&key) {
             Ok(data)
         } else {
             let data: HashSet<TData, _> = self.bucket_iterator(key.clone()).map(|x| x.unwrap()).collect();
-            let data = Arc::new(RwLock::new(data));
-            self.cache.insert(key, data.clone());
-            Ok(data)
+            let readonly_data = self.cache.insert(key, data);
+            Ok(readonly_data)
         }
     }
 
-    pub fn read(&self, key: TKey) -> Result<ReadLock<HashSet<TData, W>>, StoreError> {
-        Ok(ReadLock::new(self.get_locked_data(key)?))
-    }
-
     pub fn write(&self, writer: impl DbWriter, key: TKey, data: TData) -> Result<(), StoreError> {
-        let locked_data = self.get_locked_data(key.clone())?;
-        let mut write_guard = locked_data.write();
-        write_guard.insert(data.clone());
+        self.cache.append_if_entry_exists(key.clone(), data.clone());
         self.write_to_db(writer, key, &data)
     }
 
@@ -97,19 +72,18 @@ where
     }
 
     pub fn delete_bucket(&self, mut writer: impl DbWriter, key: TKey) -> Result<(), StoreError> {
-        let locked_data = self.get_locked_data(key.clone())?;
-        let mut write_guard = locked_data.write();
-        for data in write_guard.iter() {
+        let readonly_data = self.read(key.clone())?;
+        let read_guard = readonly_data.read();
+        // TODO: check if DB supports delete by prefix
+        for data in read_guard.iter() {
             writer.delete(self.get_db_key(&key, data)?)?;
         }
-        *write_guard = Default::default();
+        self.cache.remove(&key);
         Ok(())
     }
 
     pub fn delete(&self, mut writer: impl DbWriter, key: TKey, data: TData) -> Result<(), StoreError> {
-        let locked_data = self.get_locked_data(key.clone())?;
-        let mut write_guard = locked_data.write();
-        write_guard.remove(&data);
+        self.cache.remove_if_entry_exists(key.clone(), data.clone());
         writer.delete(self.get_db_key(&key, &data)?)?;
         Ok(())
     }
