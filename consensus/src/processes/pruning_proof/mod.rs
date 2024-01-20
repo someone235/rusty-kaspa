@@ -804,15 +804,53 @@ impl PruningProofManager {
                 selected_tip
             };
 
+            let mut finished_headers = false;
+            let mut finished_headers_for_required_block_chain = false;
             let mut current_header = selected_tip_header.clone();
+            let mut required_block_chain = BlockHashSet::new();
+            let mut selected_chain = BlockHashSet::new();
+            let mut intersected_with_required_block_chain = false;
+            let mut current_required_chain_block = self.headers_store.get_header(required_block).unwrap();
             let root_header = loop {
+                if !intersected_with_required_block_chain {
+                    required_block_chain.insert(current_required_chain_block.hash);
+                    selected_chain.insert(current_header.hash);
+                    if required_block_chain.contains(&current_header.hash)
+                        || required_block_chain.contains(&current_required_chain_block.hash)
+                    {
+                        intersected_with_required_block_chain = true;
+                    }
+                }
+
                 if current_header.direct_parents().is_empty() // Stop at genesis
                     || (pp_header.header.blue_score >= current_header.blue_score + required_level_0_depth
-                        && self.reachability_service.is_dag_ancestor_of(current_header.hash, required_block))
+                        && intersected_with_required_block_chain)
                 {
                     break current_header;
                 }
-                current_header = self.find_selected_parent_header_at_level(&current_header, level)?;
+                current_header = match self.find_selected_parent_header_at_level(&current_header, level) {
+                    Ok(header) => header,
+                    Err(PruningProofManagerInternalError::NotEnoughHeadersToBuildProof(_)) => {
+                        if !intersected_with_required_block_chain {
+                            warn!("it's unknown if the selected root for level {level} ( {} ) is in the chain of the required block {required_block}", current_header.hash)
+                        }
+                        finished_headers = true; // We want to give this root a shot if all its past is pruned
+                        break current_header;
+                    }
+                    Err(e) => return Err(e),
+                };
+
+                if !finished_headers_for_required_block_chain && !intersected_with_required_block_chain {
+                    current_required_chain_block =
+                        match self.find_selected_parent_header_at_level(&current_required_chain_block, level) {
+                            Ok(header) => header,
+                            Err(PruningProofManagerInternalError::NotEnoughHeadersToBuildProof(_)) => {
+                                finished_headers_for_required_block_chain = true;
+                                current_required_chain_block
+                            }
+                            Err(e) => return Err(e),
+                        };
+                }
             };
             let root = root_header.hash;
 
@@ -884,9 +922,12 @@ impl PruningProofManager {
                 break Ok((ghostdag_store, selected_tip, root));
             }
 
-            required_level_0_depth <<= 1;
             tries += 1;
-            warn!("Failed to find sufficient root after {tries} tries. Retrying again to find with depth {required_level_0_depth}");
+            if finished_headers {
+                panic!("Failed to find sufficient root for level {level} after {tries} tries. Headers below the current depth of {required_level_0_depth} are already pruned")
+            }
+            required_level_0_depth <<= 1;
+            warn!("Failed to find sufficient root for level {level} after {tries} tries. Retrying again to find with depth {required_level_0_depth}");
         }
     }
 

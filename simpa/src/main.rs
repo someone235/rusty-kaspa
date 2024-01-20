@@ -27,7 +27,7 @@ use kaspa_hashes::Hash;
 use kaspa_perf_monitor::{builder::Builder, counters::CountersSnapshot};
 use kaspa_utils::fd_budget;
 use simulator::network::KaspaNetworkSimulator;
-use std::{collections::VecDeque, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 pub mod simulator;
 
