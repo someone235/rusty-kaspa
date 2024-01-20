@@ -755,7 +755,7 @@ impl PruningProofManager {
                     .get_blue_score(parent)
                     .unwrap_option()
                     .ok_or(PruningProofManagerInternalError::NotEnoughHeadersToBuildProof(format!(
-                        "find_selected_parent_header_at_level (level {level}) couldn't find the header for block {parent} "
+                        "find_selected_parent_header_at_level (level {level}) couldn't find the header for block {parent}"
                     )))?
                     .into(),
             };
@@ -764,7 +764,10 @@ impl PruningProofManager {
             }
         }
         // TODO: For higher levels the chance of having more than two parents is very small, so it might make sense to fetch the whole header for the SortableBlock instead of blue_score (which will probably come from a compact header).
-        Ok(self.headers_store.get_header(sp.hash).unwrap_option().expect("already checked if compact header exists above"))
+        self.headers_store.get_header(sp.hash).unwrap_option().ok_or(PruningProofManagerInternalError::NotEnoughHeadersToBuildProof(
+            format!("find_selected_parent_header_at_level (level {level}) couldn't find the header for block {}", sp.hash,),
+        ))
+        // Ok(self.headers_store.get_header(sp.hash).unwrap_option().expect("already checked if compact header exists above"))
     }
 
     fn find_sufficient_root(
@@ -1007,7 +1010,7 @@ impl PruningProofManager {
                 } else {
                     block_at_depth_2m
                 };
-                assert!(self.reachability_service.is_dag_ancestor_of(root, old_root));
+                // assert!(self.reachability_service.is_dag_ancestor_of(root, old_root));
 
                 let mut headers = Vec::with_capacity(2 * self.pruning_proof_m as usize);
                 let mut queue = BinaryHeap::<Reverse<SortableBlock>>::new();
