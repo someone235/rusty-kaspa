@@ -18,7 +18,7 @@ use kaspa_consensus_core::{
     block::TemplateTransactionSelector,
     tx::{MutableTransaction, TransactionId, TransactionOutpoint},
 };
-use kaspa_core::{time::unix_now, trace, warn};
+use kaspa_core::{debug, time::unix_now, trace};
 use kaspa_utils::mem_size::MemSizeEstimator;
 use std::{
     collections::{hash_map::Keys, hash_set::Iter},
@@ -193,13 +193,12 @@ impl TransactionsPool {
     /// `transaction`.
     ///
     /// An error is returned if the mempool is filled with high priority transactions, or
-    /// at least one candidate for removal has a higher fee rate than `transaction`.
+    /// there are not enough lower feerate transactions that can be removed to accommodate `transaction`
     pub(crate) fn limit_transaction_count(&self, transaction: &MutableTransaction) -> RuleResult<Vec<TransactionId>> {
-        // Returns a vector of transactions to be removed that the caller has to remove actually.
-        // The caller is golang validateAndInsertTransaction equivalent.
-        // This behavior differs from golang impl.
+        // Returns a vector of transactions to be removed (the caller has to actually remove)
         let transaction_size = transaction.tx.estimate_mem_bytes();
-        let mut txs_to_remove = Vec::with_capacity(1);
+        let feerate_threshold = transaction.calculated_feerate().unwrap();
+        let mut txs_to_remove = Vec::with_capacity(1); // Normally we expect a single removal
         let mut selected_size = 0;
         for (num_selected, tx) in self
             .ready_transactions
@@ -214,10 +213,10 @@ impl TransactionsPool {
                 break;
             }
 
-            if tx.fee_rate() > transaction.calculated_feerate().unwrap() {
-                // panic!("{} {}", tx.fee_rate(), transaction.calculated_feerate().unwrap());
+            // We are iterating ready txs by ascending feerate so the pending tx has lower feerate than all remaining txs
+            if tx.fee_rate() > feerate_threshold {
                 let err = RuleError::RejectMempoolIsFull;
-                warn!("{}", err);
+                debug!("Transaction {} with feerate {} has been rejected: {}", transaction.id(), feerate_threshold, err);
                 return Err(err);
             }
 

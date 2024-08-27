@@ -81,7 +81,11 @@ impl Mempool {
             // self.transaction_pool.limit_transaction_count(&transaction) returns the
             // smallest prefix of `ready_transactions` (sorted by ascending fee-rate)
             // that makes enough room for `transaction`, but since each call to `self.remove_transaction`
-            // also removes all transactions dependant on `x` we might already have enough room.
+            // also removes all transactions dependant on `x` we might already have sufficient space, so
+            // we constantly check the break condition.
+            //
+            // Note that self.transaction_pool.len() < self.config.maximum_transaction_count means we have
+            // at least one available slot in terms of the count limit
             if self.transaction_pool.len() < self.config.maximum_transaction_count
                 && self.transaction_pool.get_estimated_size() + transaction_size <= self.config.mempool_size_limit
             {
@@ -92,7 +96,7 @@ impl Mempool {
         assert!(
             self.transaction_pool.len() < self.config.maximum_transaction_count
                 && self.transaction_pool.get_estimated_size() + transaction_size <= self.config.mempool_size_limit,
-            "Transactions in mempool: {}, max: {}, mempool size: {}, max: {}",
+            "Transactions in mempool: {}, max: {}, mempool bytes size: {}, max: {}",
             self.transaction_pool.len() + 1,
             self.config.maximum_transaction_count,
             self.transaction_pool.get_estimated_size() + transaction_size,
