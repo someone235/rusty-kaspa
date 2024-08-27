@@ -232,6 +232,20 @@ impl TransactionsPool {
             selection_overall_size += tx.mtx.mempool_estimated_bytes();
         }
 
+        // We could not find sufficient space for the pending transaction
+        if !(self.len() + 1 - txs_to_remove.len() <= self.config.maximum_transaction_count
+            && self.estimated_size + transaction_size - selection_overall_size <= self.config.mempool_size_limit)
+        {
+            let err = RuleError::RejectMempoolIsFull;
+            debug!(
+                "Mempool is filled with high-priority/ancestor txs. Transaction {} with feerate {} has been rejected: {}",
+                transaction.id(),
+                feerate_threshold,
+                err
+            );
+            return Err(err);
+        }
+
         Ok(txs_to_remove)
     }
 
