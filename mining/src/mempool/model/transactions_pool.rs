@@ -21,6 +21,7 @@ use kaspa_consensus_core::{
 use kaspa_core::{debug, time::unix_now, trace};
 use std::{
     collections::{hash_map::Keys, hash_set::Iter},
+    iter::once,
     sync::Arc,
 };
 
@@ -217,7 +218,7 @@ impl TransactionsPool {
             .filter(|mtx| mtx.priority == Priority::Low)
         {
             // TODO (optimization): inline the `has_parent_in_set` check within the redeemer traversal and exit early if possible
-            let redeemers = self.get_redeemer_ids_in_pool(&tx.id()).into_iter().collect::<TransactionIdSet>();
+            let redeemers = self.get_redeemer_ids_in_pool(&tx.id()).into_iter().chain(once(tx.id())).collect::<TransactionIdSet>();
             if transaction.has_parent_in_set(&redeemers) {
                 continue;
             }
