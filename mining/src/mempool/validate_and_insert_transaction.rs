@@ -68,10 +68,19 @@ impl Mempool {
             }
         }
 
+        // Perform mempool in-context validations prior to possible RBF replacements
+        self.validate_transaction_in_context(&transaction)?;
+
         // Check double spends and try to remove them if the RBF policy requires it
         let removed_transaction = self.execute_replace_by_fee(&transaction, rbf_policy)?;
 
-        self.validate_transaction_in_context(&transaction)?;
+        //
+        // Note: there exists a case below where `limit_transaction_count` returns an error signaling that
+        //       this tx should be rejected due to mempool size limits (rather than evicting others). However,
+        //       if this tx happened to be an RBF tx, it might have already caused an eviction in the line
+        //       above. We choose to ignore this rare case for now, as it essentially means that even the increased
+        //       feerate of the replacement tx is very low relative to the mempool overall.
+        //
 
         // Before adding the transaction, check if there is room in the pool
         let transaction_size = transaction.tx.estimate_mem_bytes();
