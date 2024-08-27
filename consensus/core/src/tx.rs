@@ -6,6 +6,7 @@ use kaspa_utils::mem_size::MemSizeEstimator;
 use kaspa_utils::{serde_bytes, serde_bytes_fixed_ref};
 pub use script_public_key::{scriptvec, ScriptPublicKey, ScriptPublicKeyVersion, ScriptPublicKeys, ScriptVec, SCRIPT_VECTOR_SIZE};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::SeqCst;
 use std::{
@@ -442,6 +443,14 @@ impl<T: AsRef<Transaction>> MutableTransaction<T> {
     /// `estimate_mem_bytes` is sensitive to pointer wrappers such as Arc
     pub fn mempool_estimated_bytes(&self) -> usize {
         self.estimate_mem_bytes()
+    }
+
+    pub fn has_parent(&self, possible_parent: TransactionId) -> bool {
+        self.tx.as_ref().inputs.iter().any(|x| x.previous_outpoint.transaction_id == possible_parent)
+    }
+
+    pub fn has_parent_in_set(&self, possible_parents: &HashSet<TransactionId>) -> bool {
+        self.tx.as_ref().inputs.iter().any(|x| possible_parents.contains(&x.previous_outpoint.transaction_id))
     }
 }
 
