@@ -13,7 +13,6 @@ use kaspa_consensus_core::{
     tx::{MutableTransaction, Transaction, TransactionId, TransactionOutpoint, UtxoEntry},
 };
 use kaspa_core::{debug, info};
-use kaspa_utils::mem_size::MemSizeEstimator;
 
 impl Mempool {
     pub(crate) fn pre_validate_and_populate_transaction(
@@ -83,8 +82,8 @@ impl Mempool {
         //
 
         // Before adding the transaction, check if there is room in the pool
-        let transaction_size = transaction.tx.estimate_mem_bytes();
-        let txs_to_remove = self.transaction_pool.limit_transaction_count(&transaction)?;
+        let transaction_size = transaction.mempool_estimated_bytes();
+        let txs_to_remove = self.transaction_pool.limit_transaction_count(&transaction, transaction_size)?;
         for x in txs_to_remove.iter() {
             self.remove_transaction(x, true, TxRemovalReason::MakingRoom, format!(" for {}", transaction_id).as_str())?;
             // self.transaction_pool.limit_transaction_count(&transaction) returns the
@@ -113,8 +112,12 @@ impl Mempool {
         );
 
         // Add the transaction to the mempool as a MempoolTransaction and return a clone of the embedded Arc<Transaction>
-        let accepted_transaction =
-            self.transaction_pool.add_transaction(transaction, consensus.get_virtual_daa_score(), priority)?.mtx.tx.clone();
+        let accepted_transaction = self
+            .transaction_pool
+            .add_transaction(transaction, consensus.get_virtual_daa_score(), priority, transaction_size)?
+            .mtx
+            .tx
+            .clone();
         Ok(TransactionPostValidation { removed: removed_transaction, accepted: Some(accepted_transaction) })
     }
 
@@ -134,7 +137,7 @@ impl Mempool {
             return Err(RuleError::RejectDuplicate(transaction_id));
         }
 
-        let tx_size = transaction.tx.estimate_mem_bytes();
+        let tx_size = transaction.mempool_estimated_bytes();
         if tx_size > self.config.mempool_size_limit {
             return Err(RuleError::RejectTxTooBig(transaction_id, tx_size, self.config.mempool_size_limit));
         }

@@ -19,7 +19,6 @@ use kaspa_consensus_core::{
     tx::{MutableTransaction, TransactionId, TransactionOutpoint},
 };
 use kaspa_core::{debug, time::unix_now, trace};
-use kaspa_utils::mem_size::MemSizeEstimator;
 use std::{
     collections::{hash_map::Keys, hash_set::Iter},
     sync::Arc,
@@ -92,15 +91,16 @@ impl TransactionsPool {
         transaction: MutableTransaction,
         virtual_daa_score: u64,
         priority: Priority,
+        transaction_size: usize,
     ) -> RuleResult<&MempoolTransaction> {
         let transaction = MempoolTransaction::new(transaction, priority, virtual_daa_score);
         let id = transaction.id();
-        self.add_mempool_transaction(transaction)?;
+        self.add_mempool_transaction(transaction, transaction_size)?;
         Ok(self.get(&id).unwrap())
     }
 
     /// Add a mempool transaction to the pool
-    pub(crate) fn add_mempool_transaction(&mut self, transaction: MempoolTransaction) -> RuleResult<()> {
+    pub(crate) fn add_mempool_transaction(&mut self, transaction: MempoolTransaction, transaction_size: usize) -> RuleResult<()> {
         let id = transaction.id();
 
         assert!(!self.all_transactions.contains_key(&id), "transaction {id} to be added already exists in the transactions pool");
@@ -121,7 +121,7 @@ impl TransactionsPool {
         }
 
         self.utxo_set.add_transaction(&transaction.mtx);
-        self.estimated_size += transaction.mtx.tx.estimate_mem_bytes();
+        self.estimated_size += transaction_size;
         self.all_transactions.insert(id, transaction);
         trace!("Added transaction {}", id);
         Ok(())
@@ -164,7 +164,7 @@ impl TransactionsPool {
 
         // Remove the transaction from the mempool UTXO set
         self.utxo_set.remove_transaction(&removed_tx.mtx, &parent_ids);
-        self.estimated_size -= removed_tx.mtx.tx.estimate_mem_bytes();
+        self.estimated_size -= removed_tx.mtx.mempool_estimated_bytes();
 
         Ok(removed_tx)
     }
@@ -194,12 +194,15 @@ impl TransactionsPool {
     ///
     /// An error is returned if the mempool is filled with high priority transactions, or
     /// there are not enough lower feerate transactions that can be removed to accommodate `transaction`
-    pub(crate) fn limit_transaction_count(&self, transaction: &MutableTransaction) -> RuleResult<Vec<TransactionId>> {
+    pub(crate) fn limit_transaction_count(
+        &self,
+        transaction: &MutableTransaction,
+        transaction_size: usize,
+    ) -> RuleResult<Vec<TransactionId>> {
         // Returns a vector of transactions to be removed (the caller has to actually remove)
-        let transaction_size = transaction.tx.estimate_mem_bytes();
         let feerate_threshold = transaction.calculated_feerate().unwrap();
         let mut txs_to_remove = Vec::with_capacity(1); // Normally we expect a single removal
-        let mut selected_size = 0;
+        let mut selection_overall_size = 0;
         for (num_selected, tx) in self
             .ready_transactions
             .ascending_iter()
@@ -208,7 +211,7 @@ impl TransactionsPool {
             .enumerate()
         {
             if self.len() + 1 - num_selected <= self.config.maximum_transaction_count
-                && self.estimated_size + transaction_size - selected_size <= self.config.mempool_size_limit
+                && self.estimated_size + transaction_size - selection_overall_size <= self.config.mempool_size_limit
             {
                 break;
             }
@@ -221,7 +224,7 @@ impl TransactionsPool {
             }
 
             txs_to_remove.push(tx.id());
-            selected_size += tx.mtx.tx.estimate_mem_bytes();
+            selection_overall_size += tx.mtx.mempool_estimated_bytes();
         }
 
         Ok(txs_to_remove)
