@@ -199,6 +199,13 @@ impl TransactionsPool {
         transaction: &MutableTransaction,
         transaction_size: usize,
     ) -> RuleResult<Vec<TransactionId>> {
+        // No eviction needed -- return
+        if self.len() < self.config.maximum_transaction_count
+            && self.estimated_size + transaction_size <= self.config.mempool_size_limit
+        {
+            return Ok(Default::default());
+        }
+
         // Returns a vector of transactions to be removed (the caller has to actually remove)
         let feerate_threshold = transaction.calculated_feerate().unwrap();
         let mut txs_to_remove = Vec::with_capacity(1); // Normally we expect a single removal
@@ -215,12 +222,6 @@ impl TransactionsPool {
                 continue;
             }
 
-            if self.len() + 1 - txs_to_remove.len() <= self.config.maximum_transaction_count
-                && self.estimated_size + transaction_size - selection_overall_size <= self.config.mempool_size_limit
-            {
-                break;
-            }
-
             // We are iterating ready txs by ascending feerate so the pending tx has lower feerate than all remaining txs
             if tx.fee_rate() > feerate_threshold {
                 let err = RuleError::RejectMempoolIsFull;
@@ -230,23 +231,25 @@ impl TransactionsPool {
 
             txs_to_remove.push(tx.id());
             selection_overall_size += tx.mtx.mempool_estimated_bytes();
+
+            if self.len() + 1 - txs_to_remove.len() <= self.config.maximum_transaction_count
+                && self.estimated_size + transaction_size - selection_overall_size <= self.config.mempool_size_limit
+            {
+                return Ok(txs_to_remove);
+            }
         }
 
         // We could not find sufficient space for the pending transaction
-        if !(self.len() + 1 - txs_to_remove.len() <= self.config.maximum_transaction_count
-            && self.estimated_size + transaction_size - selection_overall_size <= self.config.mempool_size_limit)
-        {
-            let err = RuleError::RejectMempoolIsFull;
-            debug!(
-                "Mempool is filled with high-priority/ancestor txs. Transaction {} with feerate {} has been rejected: {}",
-                transaction.id(),
-                feerate_threshold,
-                err
-            );
-            return Err(err);
-        }
-
-        Ok(txs_to_remove)
+        debug!(
+            "Mempool is filled with high-priority/ancestor txs (count: {}, bytes: {}). Transaction {} with feerate {} and size {} has been rejected: {}",
+            self.len(),
+            self.estimated_size,
+            transaction.id(),
+            feerate_threshold,
+            transaction_size,
+            RuleError::RejectMempoolIsFull
+        );
+        Err(RuleError::RejectMempoolIsFull)
     }
 
     pub(crate) fn get_estimated_size(&self) -> usize {
