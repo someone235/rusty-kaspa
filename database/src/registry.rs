@@ -58,6 +58,9 @@ pub enum DatabaseStorePrefixes {
     UtxoIndexTips = 193,
     CirculatingSupply = 194,
 
+    // ---- Archival ----
+    PruningWindowRoot = 220,
+
     // ---- Separator ----
     /// Reserved as a separator
     Separator = SEPARATOR,

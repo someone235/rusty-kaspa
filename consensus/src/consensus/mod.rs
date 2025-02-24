@@ -37,6 +37,7 @@ use crate::{
         ProcessingCounters,
     },
     processes::{
+        archival::ArchivalManager,
         ghostdag::ordering::SortableBlock,
         window::{WindowManager, WindowType},
     },
@@ -117,6 +118,8 @@ pub struct Consensus {
     pub(super) body_processor: Arc<BlockBodyProcessor>,
     pub(super) virtual_processor: Arc<VirtualStateProcessor>,
     pub(super) pruning_processor: Arc<PruningProcessor>,
+
+    archival_manager: ArchivalManager,
 
     // Storage
     pub(super) storage: Arc<ConsensusStorage>,
@@ -288,6 +291,8 @@ impl Consensus {
             virtual_processor.process_genesis();
         }
 
+        let archival_manager = ArchivalManager::new(params.max_block_level, config.params.genesis.hash, storage.clone());
+
         Self {
             db,
             block_sender: sender,
@@ -303,6 +308,7 @@ impl Consensus {
             config,
             creation_timestamp,
             is_consensus_exiting,
+            archival_manager,
         }
     }
 
@@ -1055,5 +1061,9 @@ impl ConsensusApi for Consensus {
 
     fn finality_point(&self) -> Hash {
         self.virtual_processor.virtual_finality_point(&self.lkg_virtual_state.load().ghostdag_data, self.pruning_point())
+    }
+
+    fn get_pruning_window_roots(&self) -> Vec<(u64, Hash)> {
+        self.archival_manager.get_pruning_window_roots()
     }
 }
