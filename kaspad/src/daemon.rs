@@ -101,9 +101,9 @@ pub fn validate_args(args: &Args) -> ConfigResult<()> {
     if args.logdir.is_some() && args.no_log_files {
         return Err(ConfigError::MixedLogDirAndNoLogFiles);
     }
-    if args.ram_scale < 0.1 {
-        return Err(ConfigError::RamScaleTooLow);
-    }
+    // if args.ram_scale < 0.1 {
+    //     return Err(ConfigError::RamScaleTooLow);
+    // }
     if args.ram_scale > 10.0 {
         return Err(ConfigError::RamScaleTooHigh);
     }
