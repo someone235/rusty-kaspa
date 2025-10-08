@@ -152,7 +152,9 @@ impl HandleRelayInvsFlow {
 
             let BlockValidationFutures { block_task, mut virtual_state_task } = session.validate_and_insert_block(block.clone());
 
-            let ancestor_batch = match block_task.await {
+            let result: Result<(), RuleError> = Err(RuleError::MissingParents(block.header.direct_parents().to_vec()));
+
+            let ancestor_batch = match result {
                 Ok(_) => Default::default(),
                 Err(RuleError::MissingParents(missing_parents)) => {
                     debug!("Block {} is orphan and has missing parents: {:?}", block.hash(), missing_parents);
