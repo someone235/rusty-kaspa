@@ -262,7 +262,7 @@ async fn main() {
         coinbase_maturity,
     );
 
-    const CLIENT_POOL_SIZE: usize = 8;
+    const CLIENT_POOL_SIZE: usize = 16;
     let mut rpc_clients = Vec::with_capacity(CLIENT_POOL_SIZE);
     for _ in 0..CLIENT_POOL_SIZE {
         rpc_clients.push(Arc::new(new_rpc_client(&subscription_context, &args.rpc_server).await));

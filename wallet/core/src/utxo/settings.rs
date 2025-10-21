@@ -71,6 +71,13 @@ static DEVNET_NETWORK_PARAMS: LazyLock<NetworkParams> = LazyLock::new(|| Network
     additional_compound_transaction_mass: 0,
 });
 
+static SIMPA_NETWORK_PARAMS: LazyLock<NetworkParams> = LazyLock::new(|| NetworkParams {
+    coinbase_transaction_maturity_period_daa: AtomicU64::new(0),
+    coinbase_transaction_stasis_period_daa: 500,
+    user_transaction_maturity_period_daa: AtomicU64::new(100),
+    additional_compound_transaction_mass: 0,
+});
+
 impl NetworkParams {
     pub fn from(value: NetworkId) -> &'static NetworkParams {
         match value.network_type {
@@ -82,6 +89,7 @@ impl NetworkParams {
             },
             NetworkType::Devnet => &DEVNET_NETWORK_PARAMS,
             NetworkType::Simnet => &SIMNET_NETWORK_PARAMS,
+            NetworkType::Simpa => &SIMPA_NETWORK_PARAMS,
         }
     }
 }

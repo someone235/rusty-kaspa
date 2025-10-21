@@ -96,6 +96,9 @@ impl TryFrom<KaspadConfig> for Vec<String> {
             NetworkType::Simnet => {
                 argv.push("--simnet");
             }
+            NetworkType::Simpa => {
+                argv.push("--simpa");
+            }
         }
 
         let netsuffix = network.suffix.map(|suffix| format!("--netsuffix={suffix}"));

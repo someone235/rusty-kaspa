@@ -36,6 +36,7 @@ pub enum NetworkType {
     Testnet,
     Devnet,
     Simnet,
+    Simpa,
 }
 
 impl NetworkType {
@@ -45,6 +46,7 @@ impl NetworkType {
             NetworkType::Testnet => 16210,
             NetworkType::Simnet => 16510,
             NetworkType::Devnet => 16610,
+            NetworkType::Simpa => 16710,
         }
     }
 
@@ -54,6 +56,7 @@ impl NetworkType {
             NetworkType::Testnet => 17210,
             NetworkType::Simnet => 17510,
             NetworkType::Devnet => 17610,
+            NetworkType::Simpa => 17710,
         }
     }
 
@@ -63,12 +66,13 @@ impl NetworkType {
             NetworkType::Testnet => 18210,
             NetworkType::Simnet => 18510,
             NetworkType::Devnet => 18610,
+            NetworkType::Simpa => 18710,
         }
     }
 
     pub fn iter() -> impl Iterator<Item = Self> {
-        static NETWORK_TYPES: [NetworkType; 4] =
-            [NetworkType::Mainnet, NetworkType::Testnet, NetworkType::Devnet, NetworkType::Simnet];
+        static NETWORK_TYPES: [NetworkType; 5] =
+            [NetworkType::Mainnet, NetworkType::Testnet, NetworkType::Devnet, NetworkType::Simnet, NetworkType::Simpa];
         NETWORK_TYPES.iter().copied()
     }
 }
@@ -95,6 +99,7 @@ impl From<NetworkType> for Prefix {
             NetworkType::Testnet => Prefix::Testnet,
             NetworkType::Devnet => Prefix::Devnet,
             NetworkType::Simnet => Prefix::Simnet,
+            NetworkType::Simpa => Prefix::Simnet,
         }
     }
 }
@@ -120,6 +125,7 @@ impl Display for NetworkType {
             NetworkType::Testnet => "testnet",
             NetworkType::Simnet => "simnet",
             NetworkType::Devnet => "devnet",
+            NetworkType::Simpa => "simpa",
         };
         f.write_str(s)
     }
@@ -204,7 +210,7 @@ pub struct NetworkId {
 
 impl NetworkId {
     pub const fn new(network_type: NetworkType) -> Self {
-        if !matches!(network_type, NetworkType::Mainnet | NetworkType::Devnet | NetworkType::Simnet) {
+        if !matches!(network_type, NetworkType::Mainnet | NetworkType::Devnet | NetworkType::Simnet | NetworkType::Simpa) {
             panic!("network suffix required for this network type");
         }
 
@@ -249,15 +255,17 @@ impl NetworkId {
             },
             NetworkType::Simnet => 16511,
             NetworkType::Devnet => 16611,
+            NetworkType::Simpa => 16711,
         }
     }
 
     pub fn iter() -> impl Iterator<Item = Self> {
-        static NETWORK_IDS: [NetworkId; 4] = [
+        static NETWORK_IDS: [NetworkId; 5] = [
             NetworkId::new(NetworkType::Mainnet),
             NetworkId::with_suffix(NetworkType::Testnet, 10),
             NetworkId::new(NetworkType::Devnet),
             NetworkId::new(NetworkType::Simnet),
+            NetworkId::new(NetworkType::Simpa),
         ];
         NETWORK_IDS.iter().copied()
     }

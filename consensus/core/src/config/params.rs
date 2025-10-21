@@ -448,6 +448,7 @@ impl From<NetworkType> for Params {
             NetworkType::Testnet => TESTNET_PARAMS,
             NetworkType::Devnet => DEVNET_PARAMS,
             NetworkType::Simnet => SIMNET_PARAMS,
+            NetworkType::Simpa => SIMPA_PARAMS,
         }
     }
 }
@@ -463,6 +464,7 @@ impl From<NetworkId> for Params {
             },
             NetworkType::Devnet => DEVNET_PARAMS,
             NetworkType::Simnet => SIMNET_PARAMS,
+            NetworkType::Simpa => SIMPA_PARAMS,
         }
     }
 }
@@ -697,4 +699,12 @@ pub const DEVNET_PARAMS: Params = Params {
 
     crescendo: CRESCENDO,
     crescendo_activation: ForkActivation::always(),
+};
+
+pub const SIMPA_PARAMS: Params = Params {
+    storage_mass_parameter: 0,
+    prior_coinbase_maturity: 0,
+    net: NetworkId::new(NetworkType::Simpa),
+    crescendo: CrescendoParams { coinbase_maturity: 0, ..CRESCENDO },
+    ..SIMNET_PARAMS
 };

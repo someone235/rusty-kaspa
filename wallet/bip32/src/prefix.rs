@@ -243,6 +243,7 @@ impl From<NetworkId> for Prefix {
             NetworkType::Devnet => Prefix::KTUB,
             NetworkType::Simnet => Prefix::KTUB,
             NetworkType::Testnet => Prefix::KTUB,
+            NetworkType::Simpa => Prefix::KTUB,
         }
     }
 }

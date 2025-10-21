@@ -13,7 +13,7 @@ use kaspa_consensus::{
         headers::HeaderStoreReader,
         relations::RelationsStoreReader,
     },
-    params::{ForkActivation, Params, TenBps, DEVNET_PARAMS, NETWORK_DELAY_BOUND, SIMNET_PARAMS},
+    params::{ForkActivation, Params, TenBps, NETWORK_DELAY_BOUND, SIMPA_PARAMS},
 };
 use kaspa_consensus_core::{
     api::ConsensusApi, block::Block, blockstatus::BlockStatus, config::bps::calculate_ghostdag_k, errors::block::BlockProcessResult,
@@ -192,10 +192,7 @@ fn main_impl(mut args: Args) {
         );
     }
     args.bps = if args.testnet11 { TenBps::bps() as f64 } else { args.bps };
-    let mut params = if args.testnet11 { SIMNET_PARAMS } else { DEVNET_PARAMS };
-    params.crescendo_activation = ForkActivation::always();
-    params.crescendo.coinbase_maturity = 200;
-    params.storage_mass_parameter = 10_000;
+    let params = SIMPA_PARAMS;
     let mut builder = ConfigBuilder::new(params)
         .apply_args(|config| apply_args_to_consensus_params(&args, &mut config.params))
         .apply_args(|config| apply_args_to_perf_params(&args, &mut config.perf))
@@ -204,7 +201,6 @@ fn main_impl(mut args: Args) {
             config.ram_scale = args.ram_scale;
             config.retention_period_days = args.retention_period_days;
         })
-        .skip_proof_of_work()
         .enable_sanity_checks();
     if !args.test_pruning {
         builder = builder.set_archival();

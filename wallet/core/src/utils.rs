@@ -56,6 +56,7 @@ pub fn kaspa_suffix(network_type: &NetworkType) -> &'static str {
         NetworkType::Testnet => "TKAS",
         NetworkType::Simnet => "SKAS",
         NetworkType::Devnet => "DKAS",
+        NetworkType::Simpa => "SKAS",
     }
 }
 
