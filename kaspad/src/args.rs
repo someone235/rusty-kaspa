@@ -68,6 +68,7 @@ pub struct Args {
     pub testnet_suffix: u32,
     pub devnet: bool,
     pub simnet: bool,
+    pub simpa: bool,
     pub archival: bool,
     pub sanity: bool,
     pub yes: bool,
@@ -114,6 +115,7 @@ impl Default for Args {
             testnet_suffix: 10,
             devnet: false,
             simnet: false,
+            simpa: false,
             archival: false,
             sanity: false,
             logdir: None,
@@ -184,11 +186,12 @@ impl Args {
     }
 
     pub fn network(&self) -> NetworkId {
-        match (self.testnet, self.devnet, self.simnet) {
-            (false, false, false) => NetworkId::new(NetworkType::Mainnet),
-            (true, false, false) => NetworkId::with_suffix(NetworkType::Testnet, self.testnet_suffix),
-            (false, true, false) => NetworkId::new(NetworkType::Devnet),
-            (false, false, true) => NetworkId::new(NetworkType::Simnet),
+        match (self.testnet, self.devnet, self.simnet, self.simpa) {
+            (false, false, false, false) => NetworkId::new(NetworkType::Mainnet),
+            (true, false, false, false) => NetworkId::with_suffix(NetworkType::Testnet, self.testnet_suffix),
+            (false, true, false, false) => NetworkId::new(NetworkType::Devnet),
+            (false, false, true, false) => NetworkId::new(NetworkType::Simnet),
+            (false, false, false, true) => NetworkId::new(NetworkType::Simpa),
             _ => panic!("only a single net should be activated"),
         }
     }
@@ -334,6 +337,7 @@ Setting to 0 prevents the preallocation and sets the maximum to {}, leading to 0
         )
         .arg(arg!(--devnet "Use the development test network"))
         .arg(arg!(--simnet "Use the simulation test network"))
+        .arg(arg!(--simpa "Use simpa network parameters"))
         .arg(arg!(--archival "Run as an archival node: avoids deleting old block data when moving the pruning point (Warning: heavy disk usage)"))
         .arg(arg!(--sanity "Enable various sanity checks which might be compute-intensive (mostly performed during pruning)"))
         .arg(arg!(--yes "Answer yes to all interactive console questions"))
@@ -445,6 +449,7 @@ impl Args {
             testnet_suffix: arg_match_unwrap_or::<u32>(&m, "netsuffix", defaults.testnet_suffix),
             devnet: arg_match_unwrap_or::<bool>(&m, "devnet", defaults.devnet),
             simnet: arg_match_unwrap_or::<bool>(&m, "simnet", defaults.simnet),
+            simpa: arg_match_unwrap_or::<bool>(&m, "simpa", defaults.simpa),
             archival: arg_match_unwrap_or::<bool>(&m, "archival", defaults.archival),
             sanity: arg_match_unwrap_or::<bool>(&m, "sanity", defaults.sanity),
             yes: arg_match_unwrap_or::<bool>(&m, "yes", defaults.yes),

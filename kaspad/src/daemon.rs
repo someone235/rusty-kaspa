@@ -313,7 +313,7 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
         .unwrap();
 
     // Reset Condition: Need to reset DB if we can't find genesis in current DB
-    if !is_db_reset_needed && (args.testnet || args.devnet || args.simnet) {
+    if !is_db_reset_needed && (args.testnet || args.devnet || args.simnet || args.simpa) {
         // Non-mainnet can be restarted, and when it does we need to reset the DB.
         // This will check if the current Genesis can be found the active consensus
         // DB (if one exists), and if not then ask to reset the DB.

@@ -112,6 +112,7 @@ impl FromStr for NetworkType {
             "testnet" => Ok(NetworkType::Testnet),
             "simnet" => Ok(NetworkType::Simnet),
             "devnet" => Ok(NetworkType::Devnet),
+            "simpa" => Ok(NetworkType::Simpa),
             _ => Err(NetworkTypeError::InvalidNetworkType(network_type.to_string())),
         }
     }
@@ -320,7 +321,9 @@ impl FromStr for NetworkId {
         // Disallow testnet network without suffix.
         // Lack of suffix makes it impossible to distinguish between
         // multiple testnet networks
-        if !matches!(network_type, NetworkType::Mainnet | NetworkType::Devnet | NetworkType::Simnet) && suffix.is_none() {
+        if !matches!(network_type, NetworkType::Mainnet | NetworkType::Devnet | NetworkType::Simnet | NetworkType::Simpa)
+            && suffix.is_none()
+        {
             return Err(NetworkIdError::MissingNetworkSuffix(network_name.to_string()));
         }
         match parts.next() {
