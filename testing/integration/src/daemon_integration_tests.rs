@@ -12,7 +12,7 @@ use kaspa_consensusmanager::ConsensusManager;
 use kaspa_core::{task::runtime::AsyncRuntime, trace};
 use kaspa_grpc_client::GrpcClient;
 use kaspa_notify::scope::{BlockAddedScope, UtxosChangedScope, VirtualDaaScoreChangedScope};
-use kaspa_rpc_core::{api::rpc::RpcApi, Notification, RpcIpAddress, RpcTransactionId};
+use kaspa_rpc_core::{api::rpc::RpcApi, Notification, RpcTransactionId};
 use kaspa_txscript::pay_to_address_script;
 use kaspad_lib::args::Args;
 use rand::thread_rng;
@@ -436,6 +436,11 @@ async fn daemon_pruning_catchup_test1() {
     daemon_pruning_catchup_test("Header download stage of IBD with headers proof completed successfully from").await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn daemon_pruning_catchup_test2() {
+    daemon_pruning_catchup_test("Downloaded new pruning point utxo set for pruning point").await;
+}
+
 async fn daemon_pruning_catchup_test(log_stop_line: &str) {
     init_allocator_with_default_settings();
 
@@ -482,7 +487,7 @@ async fn daemon_pruning_catchup_test(log_stop_line: &str) {
     let temp_file_path = temp_file.path().to_owned();
     let temp_file_path = temp_file_path.to_str().unwrap().into();
 
-    let args1 = Args {
+    let args = Args {
         simnet: true,
         unsafe_rpc: true,
         enable_unsynced_mining: true,
@@ -491,15 +496,11 @@ async fn daemon_pruning_catchup_test(log_stop_line: &str) {
         // logdir: Some(log_dir_path1.to_str().unwrap().into()),
         ..Default::default()
     };
-    let args2 = Args {
-        // logdir: Some(log_dir_path2.to_str().unwrap().into()),
-        ..args1.clone()
-    };
     // let total_fd_limit = kaspa_utils::fd_budget::get_limit() / 2 - 128;
     let total_fd_limit = 10;
 
-    let mut kaspad1 = Daemon::new_random_with_args(args1, total_fd_limit);
-    let mut kaspad2 = Daemon::new_random_with_args(args2, total_fd_limit);
+    let mut kaspad1 = Daemon::new_random_with_args(args.clone(), total_fd_limit);
+    let mut kaspad2 = Daemon::new_random_with_args(args.clone(), total_fd_limit);
     let rpc_client1 = kaspad1.start().await;
     let rpc_client2 = kaspad2.start().await;
 
@@ -522,7 +523,12 @@ async fn daemon_pruning_catchup_test(log_stop_line: &str) {
     tokio::time::sleep(Duration::from_secs(1)).await; // Let it connect
     assert_eq!(rpc_client2.get_connected_peer_info().await.unwrap().peer_info.len(), 1);
 
+    let start = std::time::Instant::now();
     loop {
+        if start.elapsed() > Duration::from_secs(30) {
+            panic!("Timed out waiting for log line");
+        }
+
         let mut line = String::new();
         match r.read_line(&mut line).unwrap() {
             0 => {
@@ -556,7 +562,17 @@ async fn daemon_pruning_catchup_test(log_stop_line: &str) {
     assert_eq!(rpc_client2.get_connected_peer_info().await.unwrap().peer_info.len(), 1);
 
     tokio::time::sleep(Duration::from_secs(10)).await;
-    // Expect the blocks to be relayed to daemon #2
+    // Expect kaspad2 to be synced
     let dag_info = rpc_client2.get_block_dag_info().await.unwrap();
+    assert_eq!(dag_info.sink, last_block_hash);
+
+    let mut kaspad3 = Daemon::new_random_with_args(args.clone(), total_fd_limit);
+    let rpc_client3 = kaspad3.start().await;
+    let peer2_p2p_addr = format!("127.0.0.1:{}", kaspad2.p2p_port).try_into().unwrap();
+    rpc_client3.add_peer(peer2_p2p_addr, true).await.unwrap();
+
+    tokio::time::sleep(Duration::from_secs(100)).await;
+    // Expect kaspad3 to be synced
+    let dag_info = rpc_client3.get_block_dag_info().await.unwrap();
     assert_eq!(dag_info.sink, last_block_hash);
 }

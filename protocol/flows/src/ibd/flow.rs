@@ -580,6 +580,7 @@ impl IbdFlow {
         self.sync_pruning_point_utxoset(consensus, pruning_point).await?;
         consensus.async_set_pruning_utxoset_stable().await; //  only if the function has reached here, will the utxo be considered "final"
         self.ctx.on_pruning_point_utxoset_override();
+        info!("Downloaded new pruning point utxo set for pruning point {}", pruning_point);
         Ok(())
     }
 
@@ -677,6 +678,7 @@ staging selected tip ({}) is too small or negative. Aborting IBD...",
             self.sync_missing_trusted_bodies_full_blocks(consensus, diesembodied_hashes).await?;
         }
         consensus.async_clear_disembodied_anticone_cache().await;
+        info!("Finished downloading trusted bodies");
         Ok(())
     }
     async fn sync_missing_trusted_bodies_no_headers(
