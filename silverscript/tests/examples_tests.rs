@@ -12,14 +12,6 @@ use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use rand::thread_rng;
 use secp256k1::Keypair;
 use silverscript::compiler::{CompileOptions, compile_contract};
-use silverscript::parser::parse_source_file;
-
-fn assert_parses(source: &str) {
-    let result = parse_source_file(source);
-    if let Err(err) = result {
-        panic!("failed to parse example: {err}");
-    }
-}
 
 fn build_null_data_script(tag: i64, message: &str) -> Vec<u8> {
     ScriptBuilder::new().add_op(OpReturn).unwrap().add_i64(tag).unwrap().add_data(message.as_bytes()).unwrap().drain()
@@ -356,7 +348,8 @@ fn compiles_p2pkh_example_and_verifies() {
 
     let owner = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
     let pubkey_bytes = owner.x_only_public_key().0.serialize();
-    let mut pkh = blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
+    let mut pkh =
+        blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
     pkh.truncate(20);
 
     let input = TransactionInput {
@@ -402,7 +395,7 @@ fn compiles_p2pkh_example_and_verifies() {
 }
 
 #[test]
-fn parses_transfer_with_timeout_example() {
+fn compiles_transfer_with_timeout_transfer_and_verifies() {
     let source = r#"
         pragma cashscript ^0.12.0;
 
@@ -422,5 +415,126 @@ fn parses_transfer_with_timeout_example() {
         }
     "#;
 
-    assert_parses(source);
+    let compiled = compile_contract(source, Some("transfer"), CompileOptions::default()).expect("compile succeeds");
+
+    let sender = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
+    let recipient = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
+    let sender_pk = sender.x_only_public_key().0.serialize();
+    let recipient_pk = recipient.x_only_public_key().0.serialize();
+    let timeout = 1_000i64;
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([6u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 1,
+    };
+    let output =
+        TransactionOutput { value: 8_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let sig = recipient.sign_schnorr(msg);
+    let mut signature = Vec::new();
+    signature.extend_from_slice(sig.as_ref().as_slice());
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(sender_pk.as_slice()).unwrap();
+    sigscript.add_data(recipient_pk.as_slice()).unwrap();
+    sigscript.add_i64(timeout).unwrap();
+    sigscript.add_data(&signature).unwrap();
+    tx.tx.inputs[0].signature_script = sigscript.drain();
+
+    let tx = tx.as_verifiable();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &tx,
+        &tx.inputs()[0],
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_ok(), "transfer_with_timeout transfer failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_transfer_with_timeout_timeout_and_verifies() {
+    let source = r#"
+        pragma cashscript ^0.12.0;
+
+        contract TransferWithTimeout(
+            pubkey sender,
+            pubkey recipient,
+            int timeout
+        ) {
+            function transfer(sig recipientSig) {
+                require(checkSig(recipientSig, recipient));
+            }
+
+            function timeout(sig senderSig) {
+                require(checkSig(senderSig, sender));
+                require(tx.time >= timeout);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, Some("timeout"), CompileOptions::default()).expect("compile succeeds");
+
+    let sender = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
+    let recipient = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
+    let sender_pk = sender.x_only_public_key().0.serialize();
+    let recipient_pk = recipient.x_only_public_key().0.serialize();
+    let timeout = 1_000i64;
+    let lock_time = timeout as u64;
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([8u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 1,
+    };
+    let output =
+        TransactionOutput { value: 9_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], lock_time, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let sig = sender.sign_schnorr(msg);
+    let mut signature = Vec::new();
+    signature.extend_from_slice(sig.as_ref().as_slice());
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(sender_pk.as_slice()).unwrap();
+    sigscript.add_data(recipient_pk.as_slice()).unwrap();
+    sigscript.add_i64(timeout).unwrap();
+    sigscript.add_data(&signature).unwrap();
+    tx.tx.inputs[0].signature_script = sigscript.drain();
+
+    let tx = tx.as_verifiable();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &tx,
+        &tx.inputs()[0],
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_ok(), "transfer_with_timeout timeout failed: {}", result.unwrap_err());
 }
