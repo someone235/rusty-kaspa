@@ -416,9 +416,7 @@ fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
             }
             Rule::tuple_index => {
                 let mut index_inner = postfix.into_inner();
-                let index_expr = index_inner
-                    .next()
-                    .ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
+                let index_expr = index_inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
                 let index = match parse_expression(index_expr)? {
                     Expr::Int(value) => value,
                     _ => return Err(CompilerError::Unsupported("tuple index must be a literal integer".to_string())),
@@ -1067,7 +1065,9 @@ fn expr_is_bytes(expr: &Expr, env: &HashMap<String, Expr>) -> bool {
     match expr {
         Expr::Bytes(_) => true,
         Expr::String(_) => true,
-        Expr::New { name, .. } => matches!(name.as_str(), "LockingBytecodeNullData" | "LockingBytecodeP2PKH" | "LockingBytecodeP2SH20"),
+        Expr::New { name, .. } => {
+            matches!(name.as_str(), "LockingBytecodeNullData" | "LockingBytecodeP2PKH" | "LockingBytecodeP2SH20")
+        }
         Expr::Call { name, .. } => matches!(name.as_str(), "bytes" | "blake2b") || name.starts_with("bytes"),
         Expr::Split { .. } => true,
         Expr::Binary { op: BinaryOp::Add, left, right } => expr_is_bytes(left, env) || expr_is_bytes(right, env),

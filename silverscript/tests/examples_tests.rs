@@ -49,7 +49,8 @@ fn run_contract_with_tx(
     let output1 =
         TransactionOutput { value: output1_value, script_public_key: ScriptPublicKey::new(0, output1_script.into()), covenant: None };
 
-    let tx = Transaction::new(1, vec![input.clone()], vec![output0.clone(), output1.clone()], lock_time, Default::default(), 0, vec![]);
+    let tx =
+        Transaction::new(1, vec![input.clone()], vec![output0.clone(), output1.clone()], lock_time, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, script.clone().into()), 0, tx.is_coinbase(), None);
     let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
 
@@ -95,16 +96,8 @@ fn compiles_announcement_example_and_verifies() {
     let input_value = 3000u64;
     let output1_value = input_value - 1000;
 
-    let result = run_contract_with_tx(
-        compiled.script.clone(),
-        announcement_script,
-        compiled.script,
-        input_value,
-        0,
-        output1_value,
-        vec![],
-        0,
-    );
+    let result =
+        run_contract_with_tx(compiled.script.clone(), announcement_script, compiled.script, input_value, 0, output1_value, vec![], 0);
     assert!(result.is_ok(), "announcement example failed: {}", result.unwrap_err());
 }
 
@@ -347,7 +340,7 @@ fn compiles_mecenas_locktime_example_and_verifies() {
 }
 
 #[test]
-fn parses_p2pkh_example() {
+fn compiles_p2pkh_example_and_verifies() {
     let source = r#"
         pragma cashscript ^0.12.0;
 
@@ -359,7 +352,53 @@ fn parses_p2pkh_example() {
         }
     "#;
 
-    assert_parses(source);
+    let compiled = compile_contract(source, Some("spend"), CompileOptions::default()).expect("compile succeeds");
+
+    let owner = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
+    let pubkey_bytes = owner.x_only_public_key().0.serialize();
+    let mut pkh = blake2b_simd::Params::new().hash_length(32).to_state().update(pubkey_bytes.as_slice()).finalize().as_bytes().to_vec();
+    pkh.truncate(20);
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([5u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 1,
+    };
+    let output =
+        TransactionOutput { value: 7000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let sig = owner.sign_schnorr(msg);
+    let mut signature = Vec::new();
+    signature.extend_from_slice(sig.as_ref().as_slice());
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(&pkh).unwrap();
+    sigscript.add_data(pubkey_bytes.as_slice()).unwrap();
+    sigscript.add_data(&signature).unwrap();
+    tx.tx.inputs[0].signature_script = sigscript.drain();
+
+    let tx = tx.as_verifiable();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &tx,
+        &tx.inputs()[0],
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_ok(), "p2pkh example failed: {}", result.unwrap_err());
 }
 
 #[test]
