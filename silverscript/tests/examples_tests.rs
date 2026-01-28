@@ -29,18 +29,21 @@ fn run_contract_with_tx(
     script: Vec<u8>,
     output0_script: Vec<u8>,
     input_value: u64,
+    output0_value: u64,
     output1_value: u64,
+    sigscript: Vec<u8>,
 ) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let reused_values = SigHashReusedValuesUnsync::new();
     let sig_cache = Cache::new(10_000);
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([9u8; 32]), index: 0 },
-        signature_script: vec![],
+        signature_script: sigscript,
         sequence: 0,
         sig_op_count: 0,
     };
-    let output0 = TransactionOutput { value: 0, script_public_key: ScriptPublicKey::new(0, output0_script.into()), covenant: None };
+    let output0 =
+        TransactionOutput { value: output0_value, script_public_key: ScriptPublicKey::new(0, output0_script.into()), covenant: None };
     let output1 =
         TransactionOutput { value: output1_value, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
 
@@ -90,8 +93,19 @@ fn compiles_announcement_example_and_verifies() {
     let input_value = 3000u64;
     let output1_value = input_value - 1000;
 
-    let result = run_contract_with_tx(compiled.script, announcement_script, input_value, output1_value);
+    let result = run_contract_with_tx(compiled.script, announcement_script, input_value, 0, output1_value, vec![]);
     assert!(result.is_ok(), "announcement example failed: {}", result.unwrap_err());
+}
+
+fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {
+    ScriptBuilder::new()
+        .add_op(OpBlake2b)
+        .unwrap()
+        .add_data(hash)
+        .unwrap()
+        .add_op(OpEqual)
+        .unwrap()
+        .drain()
 }
 
 #[test]
@@ -180,7 +194,7 @@ fn compiles_hodl_vault_example_and_verifies() {
 }
 
 #[test]
-fn parses_mecenas_example() {
+fn compiles_mecenas_example_and_verifies() {
     let source = r#"
         pragma cashscript ^0.12.0;
 
@@ -208,7 +222,30 @@ fn parses_mecenas_example() {
         }
     "#;
 
-    assert_parses(source);
+    let compiled = compile_contract(source, Some("receive"), CompileOptions::default()).expect("compile succeeds");
+    let recipient = [1u8; 20];
+    let funder = [2u8; 20];
+    let pledge = 2000i64;
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(&recipient).unwrap();
+    sigscript.add_data(&funder).unwrap();
+    sigscript.add_i64(pledge).unwrap();
+
+    let input_value = 10000u64;
+    let output0_value = pledge as u64;
+    let output1_value = input_value - pledge as u64 - 1000;
+    let output0_script = build_p2pkh_script(&recipient);
+
+    let result = run_contract_with_tx(
+        compiled.script,
+        output0_script,
+        input_value,
+        output0_value,
+        output1_value,
+        sigscript.drain(),
+    );
+    assert!(result.is_ok(), "mecenas example failed: {}", result.unwrap_err());
 }
 
 #[test]

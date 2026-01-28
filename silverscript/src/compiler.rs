@@ -770,6 +770,12 @@ fn compile_expr(
                 }
                 compile_expr(&args[0], env, params, builder, options, visiting, stack_depth)?;
                 builder.add_op(OpBlake2b)?;
+                builder.add_i64(0)?;
+                *stack_depth += 1;
+                builder.add_i64(20)?;
+                *stack_depth += 1;
+                builder.add_op(OpSubstr)?;
+                *stack_depth -= 2;
                 Ok(())
             }
             "checkSig" => {
@@ -804,6 +810,30 @@ fn compile_expr(
                 let script = build_null_data_script(&args[0])?;
                 builder.add_data(&script)?;
                 *stack_depth += 1;
+                Ok(())
+            }
+            "LockingBytecodeP2PKH" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported("LockingBytecodeP2PKH expects a single bytes20 argument".to_string()));
+                }
+                compile_expr(&args[0], env, params, builder, options, visiting, stack_depth)?;
+                builder.add_data(&[0x00, 0x00])?;
+                *stack_depth += 1;
+                builder.add_data(&[OpBlake2b])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_data(&[0x14])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_op(OpSwap)?;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_data(&[OpEqual])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
                 Ok(())
             }
             _ => Err(CompilerError::Unsupported(format!("unknown constructor: {name}"))),
@@ -964,7 +994,7 @@ fn expr_is_bytes(expr: &Expr, env: &HashMap<String, Expr>) -> bool {
     match expr {
         Expr::Bytes(_) => true,
         Expr::String(_) => true,
-        Expr::New { name, .. } => matches!(name.as_str(), "LockingBytecodeNullData"),
+        Expr::New { name, .. } => matches!(name.as_str(), "LockingBytecodeNullData" | "LockingBytecodeP2PKH"),
         Expr::Call { name, .. } => matches!(name.as_str(), "bytes" | "blake2b"),
         Expr::Split { .. } => true,
         Expr::Introspection { kind, .. } => {
