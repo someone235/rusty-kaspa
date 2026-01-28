@@ -59,6 +59,7 @@ members = [
     "utils",
     "utils/tower",
     "rothschild",
+    "silverscript",
     "metrics/core",
     "metrics/perf_monitor",
     "utils/alloc",
@@ -119,6 +120,7 @@ kaspa-pow = { version = "1.1.0-rc.2", path = "consensus/pow" }
 kaspa-rpc-core = { version = "1.1.0-rc.2", path = "rpc/core" }
 kaspa-rpc-macros = { version = "1.1.0-rc.2", path = "rpc/macros" }
 kaspa-rpc-service = { version = "1.1.0-rc.2", path = "rpc/service" }
+kaspa-silverscript = { version = "0.1.0", path = "silverscript" }
 kaspa-txscript = { version = "1.1.0-rc.2", path = "crypto/txscript" }
 kaspa-txscript-errors = { version = "1.1.0-rc.2", path = "crypto/txscript/errors" }
 kaspa-utils = { version = "1.1.0-rc.2", path = "utils" }

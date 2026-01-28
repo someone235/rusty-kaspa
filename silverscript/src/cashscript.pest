@@ -1,0 +1,141 @@
+source_file = { SOI ~ pragma_directive* ~ contract_definition ~ EOI }
+
+pragma_directive = { "pragma" ~ pragma_name ~ pragma_value ~ ";" }
+pragma_name = { "cashscript" }
+pragma_value = { version_constraint ~ version_constraint? }
+version_constraint = { version_operator? ~ VersionLiteral }
+version_operator = { "^" | "~" | ">=" | ">" | "<" | "<=" | "=" }
+
+contract_definition = { "contract" ~ Identifier ~ parameter_list ~ "{" ~ function_definition* ~ "}" }
+function_definition = { "function" ~ Identifier ~ parameter_list ~ "{" ~ statement* ~ "}" }
+
+parameter_list = { "(" ~ (parameter ~ ("," ~ parameter)* ~ ","?)? ~ ")" }
+parameter = { type_name ~ Identifier }
+
+block = { "{" ~ statement* ~ "}" | statement }
+
+statement = _{
+    variable_definition
+    | tuple_assignment
+    | assign_statement
+    | time_op_statement
+    | require_statement
+    | if_statement
+    | console_statement
+}
+
+variable_definition = { type_name ~ modifier* ~ Identifier ~ "=" ~ expression ~ ";" }
+tuple_assignment = { type_name ~ Identifier ~ "," ~ type_name ~ Identifier ~ "=" ~ expression ~ ";" }
+assign_statement = { Identifier ~ "=" ~ expression ~ ";" }
+
+time_op_statement = { "require" ~ "(" ~ TxVar ~ ">=" ~ expression ~ ("," ~ require_message)? ~ ")" ~ ";" }
+require_statement = { "require" ~ "(" ~ expression ~ ("," ~ require_message)? ~ ")" ~ ";" }
+
+if_statement = { "if" ~ "(" ~ expression ~ ")" ~ block ~ ("else" ~ block)? }
+
+console_statement = { "console.log" ~ console_parameter_list ~ ";" }
+require_message = { StringLiteral }
+
+console_parameter = { Identifier | literal }
+console_parameter_list = { "(" ~ (console_parameter ~ ("," ~ console_parameter)* ~ ","?)? ~ ")" }
+
+function_call = { Identifier ~ expression_list }
+expression_list = { "(" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ ")" }
+
+expression = _{ logical_or }
+
+logical_or = { logical_and ~ ("||" ~ logical_and)* }
+logical_and = { bit_or ~ ("&&" ~ bit_or)* }
+bit_or = { bit_xor ~ ("|" ~ bit_xor)* }
+bit_xor = { bit_and ~ ("^" ~ bit_and)* }
+bit_and = { equality ~ ("&" ~ equality)* }
+equality = { comparison ~ (("==" | "!=") ~ comparison)* }
+comparison = { term ~ (("<=" | "<" | ">=" | ">") ~ term)* }
+term = { factor ~ (("+" | "-") ~ factor)* }
+factor = { unary ~ (("*" | "/" | "%") ~ unary)* }
+
+unary = { ("!" | "-")* ~ postfix }
+
+postfix = { primary ~ postfix_op* }
+postfix_op = _{ tuple_index | unary_suffix | split_call | slice_call }
+
+tuple_index = { "[" ~ NumberLiteral ~ "]" }
+unary_suffix = { "." ~ ("reverse()" | "length") }
+split_call = { ".split" ~ "(" ~ expression ~ ")" }
+slice_call = { ".slice" ~ "(" ~ expression ~ "," ~ expression ~ ")" }
+
+primary = _{
+    parenthesized
+    | cast
+    | function_call
+    | instantiation
+    | introspection
+    | array
+    | NullaryOp
+    | Identifier
+    | literal
+}
+
+parenthesized = { "(" ~ expression ~ ")" }
+cast = { type_name ~ "(" ~ expression ~ ("," ~ expression)? ~ ","? ~ ")" }
+instantiation = { "new" ~ Identifier ~ expression_list }
+
+introspection = {
+    ("tx.outputs" ~ "[" ~ expression ~ "]" ~ output_field)
+    | ("tx.inputs" ~ "[" ~ expression ~ "]" ~ input_field)
+}
+
+output_field = { "." ~ ("value" | "lockingBytecode" | "tokenCategory" | "nftCommitment" | "tokenAmount") }
+input_field = { "." ~ ("value" | "lockingBytecode" | "outpointTransactionHash" | "outpointIndex" | "unlockingBytecode" | "sequenceNumber" | "tokenCategory" | "nftCommitment" | "tokenAmount") }
+
+array = { "[" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ "]" }
+
+modifier = { "constant" }
+
+literal = { BooleanLiteral | number_literal | StringLiteral | DateLiteral | HexLiteral }
+number_literal = { NumberLiteral ~ NumberUnit? }
+
+type_name = { "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | Bytes }
+
+VersionLiteral = @{ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+
+BooleanLiteral = { "true" | "false" }
+
+NumberUnit = { "satoshis" | "sats" | "finney" | "bits" | "bitcoin" | "seconds" | "minutes" | "hours" | "days" | "weeks" }
+
+NumberLiteral = @{ "-"? ~ NumberPart ~ ExponentPart? }
+NumberPart = { ASCII_DIGIT+ ~ ("_" ~ ASCII_DIGIT+ )* }
+ExponentPart = { ("e" | "E") ~ NumberPart }
+
+Bytes = { "bytes" ~ Bound? | "byte" }
+Bound = { ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
+
+StringLiteral = @{ "\"" ~ ("\\\"" | !("\"" | "\r" | "\n") ~ ANY)* ~ "\"" | "'" ~ ("\\'" | !("'" | "\r" | "\n") ~ ANY)* ~ "'" }
+
+DateLiteral = { "date(" ~ StringLiteral ~ ")" }
+
+HexLiteral = @{ "0" ~ ("x" | "X") ~ ASCII_HEX_DIGIT* }
+
+TxVar = { "this.age" | "tx.time" }
+
+NullaryOp = {
+    "this.activeInputIndex"
+    | "this.activeBytecode"
+    | "tx.inputs.length"
+    | "tx.outputs.length"
+    | "tx.version"
+    | "tx.locktime"
+}
+
+Identifier = @{ !keyword ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+
+keyword = {
+    "pragma" | "cashscript" | "contract" | "function" | "if" | "else" | "require"
+    | "console.log" | "new" | "true" | "false"
+    | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" | "bytes"
+    | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeBytecode"
+    | "tx.inputs.length" | "tx.outputs.length" | "tx.version" | "tx.locktime"
+}
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" | "\u{000C}" | COMMENT }
+COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" | "//" ~ (!"\n" ~ ANY)* }
