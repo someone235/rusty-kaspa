@@ -158,15 +158,23 @@ fn compile_function(pair: Pair<'_, Rule>, options: CompileOptions) -> Result<(St
     let fn_name = name_pair.as_str().to_string();
 
     let params = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function parameters".to_string()))?;
-    if params.into_inner().next().is_some() {
-        return Err(CompilerError::Unsupported("function parameters are not supported yet".to_string()));
-    }
+    let param_names = parse_parameter_list(params)?;
+    let param_count = param_names.len();
+    let params = param_names
+        .into_iter()
+        .enumerate()
+        .map(|(index, name)| (name, (param_count - 1 - index) as i64))
+        .collect::<HashMap<_, _>>();
 
     let mut env: HashMap<String, Expr> = HashMap::new();
     let mut builder = ScriptBuilder::new();
 
     for stmt in inner {
-        compile_statement(stmt, &mut env, &mut builder, options)?;
+        compile_statement(stmt, &mut env, &params, &mut builder, options)?;
+    }
+
+    for _ in 0..param_count {
+        builder.add_op(OpDrop)?;
     }
 
     builder.add_op(OpTrue)?;
@@ -176,6 +184,7 @@ fn compile_function(pair: Pair<'_, Rule>, options: CompileOptions) -> Result<(St
 fn compile_statement(
     pair: Pair<'_, Rule>,
     env: &mut HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
 ) -> Result<(), CompilerError> {
@@ -201,18 +210,19 @@ fn compile_statement(
             let mut inner = pair.into_inner();
             let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing require expression".to_string()))?;
             let expr = parse_expression(expr_pair)?;
-            compile_expr(&expr, env, builder, options, &mut HashSet::new())?;
+            let mut stack_depth = 0i64;
+            compile_expr(&expr, env, params, builder, options, &mut HashSet::new(), &mut stack_depth)?;
             builder.add_op(OpVerify)?;
             Ok(())
         }
-        Rule::time_op_statement => compile_time_op_statement(pair, env, builder, options),
-        Rule::if_statement => compile_if_statement(pair, env, builder, options),
+        Rule::time_op_statement => compile_time_op_statement(pair, env, params, builder, options),
+        Rule::if_statement => compile_if_statement(pair, env, params, builder, options),
         Rule::assign_statement | Rule::tuple_assignment | Rule::console_statement => {
             Err(CompilerError::Unsupported("statement type not supported in compiler yet".to_string()))
         }
         Rule::statement => {
             if let Some(inner) = pair.into_inner().next() {
-                compile_statement(inner, env, builder, options)
+                compile_statement(inner, env, params, builder, options)
             } else {
                 Ok(())
             }
@@ -224,21 +234,23 @@ fn compile_statement(
 fn compile_if_statement(
     pair: Pair<'_, Rule>,
     env: &mut HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
 ) -> Result<(), CompilerError> {
     let mut inner = pair.into_inner();
     let cond_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if condition".to_string()))?;
     let cond_expr = parse_expression(cond_pair)?;
-    compile_expr(&cond_expr, env, builder, options, &mut HashSet::new())?;
+    let mut stack_depth = 0i64;
+    compile_expr(&cond_expr, env, params, builder, options, &mut HashSet::new(), &mut stack_depth)?;
     builder.add_op(OpIf)?;
 
     let then_block = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if block".to_string()))?;
-    compile_block(then_block, env, builder, options)?;
+    compile_block(then_block, env, params, builder, options)?;
 
     if let Some(else_block) = inner.next() {
         builder.add_op(OpElse)?;
-        compile_block(else_block, env, builder, options)?;
+        compile_block(else_block, env, params, builder, options)?;
     }
 
     builder.add_op(OpEndIf)?;
@@ -248,6 +260,7 @@ fn compile_if_statement(
 fn compile_time_op_statement(
     pair: Pair<'_, Rule>,
     env: &mut HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
 ) -> Result<(), CompilerError> {
@@ -256,7 +269,8 @@ fn compile_time_op_statement(
     let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing time op expression".to_string()))?;
 
     let expr = parse_expression(expr_pair)?;
-    compile_expr(&expr, env, builder, options, &mut HashSet::new())?;
+    let mut stack_depth = 0i64;
+    compile_expr(&expr, env, params, builder, options, &mut HashSet::new(), &mut stack_depth)?;
 
     match tx_var.as_str() {
         "this.age" => {
@@ -274,17 +288,18 @@ fn compile_time_op_statement(
 fn compile_block(
     pair: Pair<'_, Rule>,
     env: &mut HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
 ) -> Result<(), CompilerError> {
     match pair.as_rule() {
         Rule::block => {
             for stmt in pair.into_inner() {
-                compile_statement(stmt, env, builder, options)?;
+                compile_statement(stmt, env, params, builder, options)?;
             }
             Ok(())
         }
-        _ => compile_statement(pair, env, builder, options),
+        _ => compile_statement(pair, env, params, builder, options),
     }
 }
 
@@ -359,6 +374,24 @@ fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
     }
     Ok(expr)
+}
+
+fn parse_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<String>, CompilerError> {
+    let mut names = Vec::new();
+    for param in pair.into_inner() {
+        if param.as_rule() != Rule::parameter {
+            continue;
+        }
+        let mut inner = param.into_inner();
+        let _type_name = inner
+            .next()
+            .ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?;
+        let ident = inner
+            .next()
+            .ok_or_else(|| CompilerError::Unsupported("missing parameter name".to_string()))?;
+        names.push(ident.as_str().to_string());
+    }
+    Ok(names)
 }
 
 fn parse_primary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
@@ -562,34 +595,49 @@ fn map_factor(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
 fn compile_expr(
     expr: &Expr,
     env: &HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     visiting: &mut HashSet<String>,
+    stack_depth: &mut i64,
 ) -> Result<(), CompilerError> {
     match expr {
         Expr::Int(value) => {
             builder.add_i64(*value)?;
+            *stack_depth += 1;
             Ok(())
         }
         Expr::Bool(value) => {
             builder.add_op(if *value { OpTrue } else { OpFalse })?;
+            *stack_depth += 1;
             Ok(())
         }
         Expr::Bytes(bytes) => {
             builder.add_data(bytes)?;
+            *stack_depth += 1;
             Ok(())
         }
         Expr::Identifier(name) => {
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
             }
-            let expr = env.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?;
-            compile_expr(expr, env, builder, options, visiting)?;
+            if let Some(expr) = env.get(name) {
+                compile_expr(expr, env, params, builder, options, visiting, stack_depth)?;
+                visiting.remove(name);
+                return Ok(());
+            }
+            if let Some(index) = params.get(name) {
+                builder.add_i64(*index + *stack_depth)?;
+                *stack_depth += 1;
+                builder.add_op(OpPick)?;
+                visiting.remove(name);
+                return Ok(());
+            }
             visiting.remove(name);
-            Ok(())
+            Err(CompilerError::UndefinedIdentifier(name.clone()))
         }
         Expr::Unary { op, expr } => {
-            compile_expr(expr, env, builder, options, visiting)?;
+            compile_expr(expr, env, params, builder, options, visiting, stack_depth)?;
             match op {
                 UnaryOp::Not => builder.add_op(OpNot)?,
                 UnaryOp::Neg => builder.add_op(OpNegate)?,
@@ -597,8 +645,8 @@ fn compile_expr(
             Ok(())
         }
         Expr::Binary { op, left, right } => {
-            compile_expr(left, env, builder, options, visiting)?;
-            compile_expr(right, env, builder, options, visiting)?;
+            compile_expr(left, env, params, builder, options, visiting, stack_depth)?;
+            compile_expr(right, env, params, builder, options, visiting, stack_depth)?;
             match op {
                 BinaryOp::Or => {
                     builder.add_op(OpBoolOr)?;
@@ -655,6 +703,7 @@ fn compile_expr(
                     builder.add_op(OpMod)?;
                 }
             }
+            *stack_depth -= 1;
             Ok(())
         }
         Expr::Nullary(op) => {
@@ -679,10 +728,11 @@ fn compile_expr(
                     builder.add_op(OpTxLockTime)?;
                 }
             }
+            *stack_depth += 1;
             Ok(())
         }
         Expr::Introspection { kind, index } => {
-            compile_expr(index, env, builder, options, visiting)?;
+            compile_expr(index, env, params, builder, options, visiting, stack_depth)?;
             match kind {
                 IntrospectionKind::InputValue => {
                     builder.add_op(OpTxInputAmount)?;

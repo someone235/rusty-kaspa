@@ -47,6 +47,32 @@ fn run_script_with_tx(script: Vec<u8>, lock_time: u64, sequence: u64) -> Result<
     vm.execute()
 }
 
+fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([1u8; 32]), index: 0 },
+        signature_script: sigscript,
+        sequence: 0,
+        sig_op_count: 0,
+    };
+    let output = TransactionOutput { value: 1000, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, output.script_public_key.clone(), 0, tx.is_coinbase(), None);
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
+
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated_tx,
+        &input,
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+    vm.execute()
+}
+
 #[test]
 fn compiles_basic_arithmetic_and_verifies() {
     let source = r#"
@@ -192,4 +218,72 @@ fn compiles_reused_variables_and_verifies() {
 
     assert_eq!(compiled.script, expected);
     assert!(run_script(compiled.script).is_ok());
+}
+
+#[test]
+fn compiles_sigscript_inputs_and_verifies() {
+    let source = r#"
+        contract Test() {
+            function main(int a, int b) {
+                require(a + b == 7);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().add_i64(3).unwrap().add_i64(4).unwrap().drain();
+
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "sigscript test failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_sigscript_reused_inputs_and_verifies() {
+    let source = r#"
+        contract Test() {
+            function main(int a) {
+                require(a * a + a == 12);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().add_i64(3).unwrap().drain();
+
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_ok(), "sigscript reuse test failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_sigscript_inputs_and_fails_on_wrong_sum() {
+    let source = r#"
+        contract Test() {
+            function main(int a, int b) {
+                require(a + b == 7);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().add_i64(2).unwrap().add_i64(4).unwrap().drain();
+
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_err());
+}
+
+#[test]
+fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
+    let source = r#"
+        contract Test() {
+            function main(int a) {
+                require(a * a + a == 12);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
+    let sigscript = ScriptBuilder::new().add_i64(4).unwrap().drain();
+
+    let result = run_script_with_sigscript(compiled.script, sigscript);
+    assert!(result.is_err());
 }
