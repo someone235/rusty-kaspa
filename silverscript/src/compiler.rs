@@ -47,7 +47,11 @@ enum Expr {
     Int(i64),
     Bool(bool),
     Bytes(Vec<u8>),
+    String(String),
     Identifier(String),
+    Array(Vec<Expr>),
+    Call { name: String, args: Vec<Expr> },
+    New { name: String, args: Vec<Expr> },
     Unary { op: UnaryOp, expr: Box<Expr> },
     Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
     Nullary(NullaryOp),
@@ -160,11 +164,8 @@ fn compile_function(pair: Pair<'_, Rule>, options: CompileOptions) -> Result<(St
     let params = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function parameters".to_string()))?;
     let param_names = parse_parameter_list(params)?;
     let param_count = param_names.len();
-    let params = param_names
-        .into_iter()
-        .enumerate()
-        .map(|(index, name)| (name, (param_count - 1 - index) as i64))
-        .collect::<HashMap<_, _>>();
+    let params =
+        param_names.into_iter().enumerate().map(|(index, name)| (name, (param_count - 1 - index) as i64)).collect::<HashMap<_, _>>();
 
     let mut env: HashMap<String, Expr> = HashMap::new();
     let mut builder = ScriptBuilder::new();
@@ -327,11 +328,11 @@ fn parse_expression(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         Rule::Identifier => Ok(Expr::Identifier(pair.as_str().to_string())),
         Rule::NullaryOp => parse_nullary(pair.as_str()),
         Rule::introspection => parse_introspection(pair),
-        Rule::array
-        | Rule::cast
-        | Rule::function_call
-        | Rule::instantiation
-        | Rule::split_call
+        Rule::array => parse_array(pair),
+        Rule::function_call => parse_function_call(pair),
+        Rule::instantiation => parse_instantiation(pair),
+        Rule::cast => parse_cast(pair),
+        Rule::split_call
         | Rule::slice_call
         | Rule::tuple_index
         | Rule::unary_suffix
@@ -383,12 +384,8 @@ fn parse_parameter_list(pair: Pair<'_, Rule>) -> Result<Vec<String>, CompilerErr
             continue;
         }
         let mut inner = param.into_inner();
-        let _type_name = inner
-            .next()
-            .ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?;
-        let ident = inner
-            .next()
-            .ok_or_else(|| CompilerError::Unsupported("missing parameter name".to_string()))?;
+        let _type_name = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter type".to_string()))?;
+        let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing parameter name".to_string()))?;
         names.push(ident.as_str().to_string());
     }
     Ok(names)
@@ -401,6 +398,10 @@ fn parse_primary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         Rule::Identifier => Ok(Expr::Identifier(pair.as_str().to_string())),
         Rule::NullaryOp => parse_nullary(pair.as_str()),
         Rule::introspection => parse_introspection(pair),
+        Rule::array => parse_array(pair),
+        Rule::function_call => parse_function_call(pair),
+        Rule::instantiation => parse_instantiation(pair),
+        Rule::cast => parse_cast(pair),
         Rule::expression => parse_expression(pair),
         _ => Err(CompilerError::Unsupported(format!("primary not supported: {:?}", pair.as_rule()))),
     }
@@ -412,7 +413,7 @@ fn parse_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         Rule::number_literal => parse_number_literal(pair),
         Rule::NumberLiteral => parse_number(pair.as_str()),
         Rule::HexLiteral => parse_hex_literal(pair.as_str()),
-        Rule::StringLiteral => Err(CompilerError::Unsupported("string literals are not supported".to_string())),
+        Rule::StringLiteral => parse_string_literal(pair),
         Rule::DateLiteral => Err(CompilerError::Unsupported("date literals are not supported".to_string())),
         _ => Err(CompilerError::Unsupported(format!("literal not supported: {:?}", pair.as_rule()))),
     }
@@ -424,6 +425,54 @@ fn parse_number(raw: &str) -> Result<Expr, CompilerError> {
     Ok(Expr::Int(value))
 }
 
+fn parse_array(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let mut values = Vec::new();
+    for expr_pair in pair.into_inner() {
+        values.push(parse_expression(expr_pair)?);
+    }
+    Ok(Expr::Array(values))
+}
+
+fn parse_function_call(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let mut inner = pair.into_inner();
+    let name = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?.as_str().to_string();
+    let args = match inner.next() {
+        Some(list) => parse_expression_list(list)?,
+        None => Vec::new(),
+    };
+    Ok(Expr::Call { name, args })
+}
+
+fn parse_instantiation(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let mut inner = pair.into_inner();
+    let name = inner.next().ok_or_else(|| CompilerError::Unsupported("missing constructor name".to_string()))?.as_str().to_string();
+    let args = match inner.next() {
+        Some(list) => parse_expression_list(list)?,
+        None => Vec::new(),
+    };
+    Ok(Expr::New { name, args })
+}
+
+fn parse_expression_list(pair: Pair<'_, Rule>) -> Result<Vec<Expr>, CompilerError> {
+    let mut args = Vec::new();
+    for expr_pair in pair.into_inner() {
+        args.push(parse_expression(expr_pair)?);
+    }
+    Ok(args)
+}
+
+fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let mut inner = pair.into_inner();
+    let type_name = inner.next().ok_or_else(|| CompilerError::Unsupported("missing cast type".to_string()))?.as_str().to_string();
+    let args = match inner.next() {
+        Some(list) => parse_expression_list(list)?,
+        None => Vec::new(),
+    };
+    match type_name.as_str() {
+        "bytes" => Ok(Expr::Call { name: "bytes".to_string(), args }),
+        _ => Err(CompilerError::Unsupported(format!("cast type not supported: {type_name}"))),
+    }
+}
 fn parse_number_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     let mut inner = pair.into_inner();
     let number = inner.next().ok_or_else(|| CompilerError::InvalidLiteral("missing number literal".to_string()))?;
@@ -446,6 +495,16 @@ fn parse_hex_literal(raw: &str) -> Result<Expr, CompilerError> {
     Ok(Expr::Bytes(bytes))
 }
 
+fn parse_string_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let raw = pair.as_str();
+    let unquoted = if raw.starts_with('"') && raw.ends_with('"') || raw.starts_with('\'') && raw.ends_with('\'') {
+        &raw[1..raw.len() - 1]
+    } else {
+        raw
+    };
+    let unescaped = unquoted.replace("\\\"", "\"").replace("\\'", "'");
+    Ok(Expr::String(unescaped))
+}
 fn parse_nullary(raw: &str) -> Result<Expr, CompilerError> {
     let op = match raw {
         "this.activeInputIndex" => NullaryOp::ActiveInputIndex,
@@ -617,6 +676,7 @@ fn compile_expr(
             *stack_depth += 1;
             Ok(())
         }
+        Expr::String(_) => Err(CompilerError::Unsupported("string literals are only supported via bytes(...)".to_string())),
         Expr::Identifier(name) => {
             if !visiting.insert(name.clone()) {
                 return Err(CompilerError::CyclicIdentifier(name.clone()));
@@ -636,6 +696,65 @@ fn compile_expr(
             visiting.remove(name);
             Err(CompilerError::UndefinedIdentifier(name.clone()))
         }
+        Expr::Array(_) => Err(CompilerError::Unsupported("array literals are only supported in LockingBytecodeNullData".to_string())),
+        Expr::Call { name, args } => match name.as_str() {
+            "bytes" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported("bytes() expects a single argument".to_string()));
+                }
+                match &args[0] {
+                    Expr::String(value) => {
+                        builder.add_data(value.as_bytes())?;
+                        *stack_depth += 1;
+                        Ok(())
+                    }
+                    _ => Err(CompilerError::Unsupported("bytes() only supports string literals".to_string())),
+                }
+            }
+            "blake2b" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported("blake2b() expects a single argument".to_string()));
+                }
+                compile_expr(&args[0], env, params, builder, options, visiting, stack_depth)?;
+                builder.add_op(OpBlake2b)?;
+                Ok(())
+            }
+            "checkSig" => {
+                if args.len() != 2 {
+                    return Err(CompilerError::Unsupported("checkSig() expects 2 arguments".to_string()));
+                }
+                compile_expr(&args[0], env, params, builder, options, visiting, stack_depth)?;
+                compile_expr(&args[1], env, params, builder, options, visiting, stack_depth)?;
+                builder.add_op(OpCheckSig)?;
+                *stack_depth -= 1;
+                Ok(())
+            }
+            "checkDataSig" => {
+                for arg in args {
+                    compile_expr(arg, env, params, builder, options, visiting, stack_depth)?;
+                }
+                for _ in 0..args.len() {
+                    builder.add_op(OpDrop)?;
+                    *stack_depth -= 1;
+                }
+                builder.add_op(OpTrue)?;
+                *stack_depth += 1;
+                Ok(())
+            }
+            _ => Err(CompilerError::Unsupported(format!("unknown function call: {name}"))),
+        },
+        Expr::New { name, args } => match name.as_str() {
+            "LockingBytecodeNullData" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported("LockingBytecodeNullData expects a single array argument".to_string()));
+                }
+                let script = build_null_data_script(&args[0])?;
+                builder.add_data(&script)?;
+                *stack_depth += 1;
+                Ok(())
+            }
+            _ => Err(CompilerError::Unsupported(format!("unknown constructor: {name}"))),
+        },
         Expr::Unary { op, expr } => {
             compile_expr(expr, env, params, builder, options, visiting, stack_depth)?;
             match op {
@@ -645,6 +764,7 @@ fn compile_expr(
             Ok(())
         }
         Expr::Binary { op, left, right } => {
+            let bytes_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (expr_is_bytes(left, env) || expr_is_bytes(right, env));
             compile_expr(left, env, params, builder, options, visiting, stack_depth)?;
             compile_expr(right, env, params, builder, options, visiting, stack_depth)?;
             match op {
@@ -667,10 +787,15 @@ fn compile_expr(
                     builder.add_op(OpAnd)?;
                 }
                 BinaryOp::Eq => {
-                    builder.add_op(OpNumEqual)?;
+                    builder.add_op(if bytes_eq { OpEqual } else { OpNumEqual })?;
                 }
                 BinaryOp::Ne => {
-                    builder.add_op(OpNumNotEqual)?;
+                    if bytes_eq {
+                        builder.add_op(OpEqual)?;
+                        builder.add_op(OpNot)?;
+                    } else {
+                        builder.add_op(OpNumNotEqual)?;
+                    }
                 }
                 BinaryOp::Lt => {
                     builder.add_op(OpLessThan)?;
@@ -752,6 +877,67 @@ fn compile_expr(
     }
 }
 
+fn expr_is_bytes(expr: &Expr, env: &HashMap<String, Expr>) -> bool {
+    match expr {
+        Expr::Bytes(_) => true,
+        Expr::String(_) => true,
+        Expr::New { name, .. } => matches!(name.as_str(), "LockingBytecodeNullData"),
+        Expr::Call { name, .. } => matches!(name.as_str(), "bytes" | "blake2b"),
+        Expr::Introspection { kind, .. } => {
+            matches!(kind, IntrospectionKind::InputLockingBytecode | IntrospectionKind::OutputLockingBytecode)
+        }
+        Expr::Nullary(NullaryOp::ActiveBytecode) => true,
+        Expr::Identifier(name) => env.get(name).map(|e| expr_is_bytes(e, env)).unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn build_null_data_script(arg: &Expr) -> Result<Vec<u8>, CompilerError> {
+    let elements = match arg {
+        Expr::Array(items) => items,
+        _ => return Err(CompilerError::Unsupported("LockingBytecodeNullData expects an array literal".to_string())),
+    };
+
+    let mut builder = ScriptBuilder::new();
+    builder.add_op(OpReturn)?;
+    for item in elements {
+        match item {
+            Expr::Int(value) => {
+                builder.add_i64(*value)?;
+            }
+            Expr::Bytes(bytes) => {
+                builder.add_data(bytes)?;
+            }
+            Expr::String(value) => {
+                builder.add_data(value.as_bytes())?;
+            }
+            Expr::Call { name, args } if name == "bytes" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported(
+                        "bytes() in LockingBytecodeNullData expects a single argument".to_string(),
+                    ));
+                }
+                match &args[0] {
+                    Expr::String(value) => {
+                        builder.add_data(value.as_bytes())?;
+                    }
+                    _ => {
+                        return Err(CompilerError::Unsupported(
+                            "bytes() in LockingBytecodeNullData only supports string literals".to_string(),
+                        ));
+                    }
+                }
+            }
+            _ => return Err(CompilerError::Unsupported("LockingBytecodeNullData only supports int or bytes literals".to_string())),
+        }
+    }
+
+    let script = builder.drain();
+    let mut spk_bytes = Vec::with_capacity(2 + script.len());
+    spk_bytes.extend_from_slice(&0u16.to_be_bytes());
+    spk_bytes.extend_from_slice(&script);
+    Ok(spk_bytes)
+}
 fn require_covenants(options: CompileOptions, feature: &str) -> Result<(), CompilerError> {
     if options.covenants_enabled {
         Ok(())
