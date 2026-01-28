@@ -5701,6 +5701,7 @@ dependencies = [
 name = "silverscript"
 version = "1.1.0-rc.2"
 dependencies = [
+ "blake2b_simd",
  "kaspa-consensus-core",
  "kaspa-txscript",
  "kaspa-txscript-errors",

@@ -15,6 +15,7 @@ path = "src/lib.rs"
 kaspa-consensus-core.workspace = true
 kaspa-txscript.workspace = true
 kaspa-txscript-errors.workspace = true
+blake2b_simd.workspace = true
 pest = "2.7"
 pest_derive = "2.7"
 rand.workspace = true

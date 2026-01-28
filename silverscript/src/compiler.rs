@@ -414,6 +414,25 @@ fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
                 let index = Box::new(parse_expression(index_expr)?);
                 expr = Expr::Split { source: Box::new(expr), index, part: SplitPart::Left };
             }
+            Rule::tuple_index => {
+                let mut index_inner = postfix.into_inner();
+                let index_expr = index_inner
+                    .next()
+                    .ok_or_else(|| CompilerError::Unsupported("missing tuple index".to_string()))?;
+                let index = match parse_expression(index_expr)? {
+                    Expr::Int(value) => value,
+                    _ => return Err(CompilerError::Unsupported("tuple index must be a literal integer".to_string())),
+                };
+                match (&expr, index) {
+                    (Expr::Split { source, index: split_index, .. }, 0) => {
+                        expr = Expr::Split { source: source.clone(), index: split_index.clone(), part: SplitPart::Left };
+                    }
+                    (Expr::Split { source, index: split_index, .. }, 1) => {
+                        expr = Expr::Split { source: source.clone(), index: split_index.clone(), part: SplitPart::Right };
+                    }
+                    _ => return Err(CompilerError::Unsupported("tuple indexing only supports split() results".to_string())),
+                }
+            }
             _ => {
                 return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
             }
@@ -513,11 +532,16 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         Some(list) => parse_expression_list(list)?,
         None => Vec::new(),
     };
-    match type_name.as_str() {
-        "bytes" => Ok(Expr::Call { name: "bytes".to_string(), args }),
-        "int" => Ok(Expr::Call { name: "int".to_string(), args }),
-        _ => Err(CompilerError::Unsupported(format!("cast type not supported: {type_name}"))),
+    if type_name == "bytes" {
+        return Ok(Expr::Call { name: "bytes".to_string(), args });
     }
+    if type_name == "int" {
+        return Ok(Expr::Call { name: "int".to_string(), args });
+    }
+    if let Some(size) = type_name.strip_prefix("bytes").and_then(|v| v.parse::<usize>().ok()) {
+        return Ok(Expr::Call { name: format!("bytes{size}"), args });
+    }
+    Err(CompilerError::Unsupported(format!("cast type not supported: {type_name}")))
 }
 fn parse_number_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     let mut inner = pair.into_inner();
@@ -764,6 +788,21 @@ fn compile_expr(
                 compile_expr(&args[0], env, params, builder, options, visiting, stack_depth)?;
                 Ok(())
             }
+            name if name.starts_with("bytes") => {
+                let size = name
+                    .strip_prefix("bytes")
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .ok_or_else(|| CompilerError::Unsupported(format!("{name}() is not supported")))?;
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported(format!("{name}() expects a single argument")));
+                }
+                compile_expr(&args[0], env, params, builder, options, visiting, stack_depth)?;
+                builder.add_i64(size)?;
+                *stack_depth += 1;
+                builder.add_op(OpNum2Bin)?;
+                *stack_depth -= 1;
+                Ok(())
+            }
             "blake2b" => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("blake2b() expects a single argument".to_string()));
@@ -836,6 +875,30 @@ fn compile_expr(
                 *stack_depth -= 1;
                 Ok(())
             }
+            "LockingBytecodeP2SH20" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported("LockingBytecodeP2SH20 expects a single bytes20 argument".to_string()));
+                }
+                compile_expr(&args[0], env, params, builder, options, visiting, stack_depth)?;
+                builder.add_data(&[0x00, 0x00])?;
+                *stack_depth += 1;
+                builder.add_data(&[OpBlake2b])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_data(&[0x14])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_op(OpSwap)?;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                builder.add_data(&[OpEqual])?;
+                *stack_depth += 1;
+                builder.add_op(OpCat)?;
+                *stack_depth -= 1;
+                Ok(())
+            }
             _ => Err(CompilerError::Unsupported(format!("unknown constructor: {name}"))),
         },
         Expr::Unary { op, expr } => {
@@ -848,8 +911,14 @@ fn compile_expr(
         }
         Expr::Binary { op, left, right } => {
             let bytes_eq = matches!(op, BinaryOp::Eq | BinaryOp::Ne) && (expr_is_bytes(left, env) || expr_is_bytes(right, env));
-            compile_expr(left, env, params, builder, options, visiting, stack_depth)?;
-            compile_expr(right, env, params, builder, options, visiting, stack_depth)?;
+            let bytes_add = matches!(op, BinaryOp::Add) && (expr_is_bytes(left, env) || expr_is_bytes(right, env));
+            if bytes_add {
+                compile_concat_operand(left, env, params, builder, options, visiting, stack_depth)?;
+                compile_concat_operand(right, env, params, builder, options, visiting, stack_depth)?;
+            } else {
+                compile_expr(left, env, params, builder, options, visiting, stack_depth)?;
+                compile_expr(right, env, params, builder, options, visiting, stack_depth)?;
+            }
             match op {
                 BinaryOp::Or => {
                     builder.add_op(OpBoolOr)?;
@@ -893,7 +962,11 @@ fn compile_expr(
                     builder.add_op(OpGreaterThanOrEqual)?;
                 }
                 BinaryOp::Add => {
-                    builder.add_op(OpAdd)?;
+                    if bytes_add {
+                        builder.add_op(OpCat)?;
+                    } else {
+                        builder.add_op(OpAdd)?;
+                    }
                 }
                 BinaryOp::Sub => {
                     builder.add_op(OpSub)?;
@@ -994,9 +1067,10 @@ fn expr_is_bytes(expr: &Expr, env: &HashMap<String, Expr>) -> bool {
     match expr {
         Expr::Bytes(_) => true,
         Expr::String(_) => true,
-        Expr::New { name, .. } => matches!(name.as_str(), "LockingBytecodeNullData" | "LockingBytecodeP2PKH"),
-        Expr::Call { name, .. } => matches!(name.as_str(), "bytes" | "blake2b"),
+        Expr::New { name, .. } => matches!(name.as_str(), "LockingBytecodeNullData" | "LockingBytecodeP2PKH" | "LockingBytecodeP2SH20"),
+        Expr::Call { name, .. } => matches!(name.as_str(), "bytes" | "blake2b") || name.starts_with("bytes"),
         Expr::Split { .. } => true,
+        Expr::Binary { op: BinaryOp::Add, left, right } => expr_is_bytes(left, env) || expr_is_bytes(right, env),
         Expr::Introspection { kind, .. } => {
             matches!(kind, IntrospectionKind::InputLockingBytecode | IntrospectionKind::OutputLockingBytecode)
         }
@@ -1004,6 +1078,25 @@ fn expr_is_bytes(expr: &Expr, env: &HashMap<String, Expr>) -> bool {
         Expr::Identifier(name) => env.get(name).map(|e| expr_is_bytes(e, env)).unwrap_or(false),
         _ => false,
     }
+}
+
+fn compile_concat_operand(
+    expr: &Expr,
+    env: &HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    visiting: &mut HashSet<String>,
+    stack_depth: &mut i64,
+) -> Result<(), CompilerError> {
+    compile_expr(expr, env, params, builder, options, visiting, stack_depth)?;
+    if !expr_is_bytes(expr, env) {
+        builder.add_i64(1)?;
+        *stack_depth += 1;
+        builder.add_op(OpNum2Bin)?;
+        *stack_depth -= 1;
+    }
+    Ok(())
 }
 
 fn build_null_data_script(arg: &Expr) -> Result<Vec<u8>, CompilerError> {

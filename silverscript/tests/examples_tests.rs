@@ -28,10 +28,12 @@ fn build_null_data_script(tag: i64, message: &str) -> Vec<u8> {
 fn run_contract_with_tx(
     script: Vec<u8>,
     output0_script: Vec<u8>,
+    output1_script: Vec<u8>,
     input_value: u64,
     output0_value: u64,
     output1_value: u64,
     sigscript: Vec<u8>,
+    lock_time: u64,
 ) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let reused_values = SigHashReusedValuesUnsync::new();
     let sig_cache = Cache::new(10_000);
@@ -45,9 +47,9 @@ fn run_contract_with_tx(
     let output0 =
         TransactionOutput { value: output0_value, script_public_key: ScriptPublicKey::new(0, output0_script.into()), covenant: None };
     let output1 =
-        TransactionOutput { value: output1_value, script_public_key: ScriptPublicKey::new(0, script.clone().into()), covenant: None };
+        TransactionOutput { value: output1_value, script_public_key: ScriptPublicKey::new(0, output1_script.into()), covenant: None };
 
-    let tx = Transaction::new(1, vec![input.clone()], vec![output0.clone(), output1.clone()], 0, Default::default(), 0, vec![]);
+    let tx = Transaction::new(1, vec![input.clone()], vec![output0.clone(), output1.clone()], lock_time, Default::default(), 0, vec![]);
     let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, script.clone().into()), 0, tx.is_coinbase(), None);
     let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
 
@@ -93,19 +95,25 @@ fn compiles_announcement_example_and_verifies() {
     let input_value = 3000u64;
     let output1_value = input_value - 1000;
 
-    let result = run_contract_with_tx(compiled.script, announcement_script, input_value, 0, output1_value, vec![]);
+    let result = run_contract_with_tx(
+        compiled.script.clone(),
+        announcement_script,
+        compiled.script,
+        input_value,
+        0,
+        output1_value,
+        vec![],
+        0,
+    );
     assert!(result.is_ok(), "announcement example failed: {}", result.unwrap_err());
 }
 
 fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {
-    ScriptBuilder::new()
-        .add_op(OpBlake2b)
-        .unwrap()
-        .add_data(hash)
-        .unwrap()
-        .add_op(OpEqual)
-        .unwrap()
-        .drain()
+    ScriptBuilder::new().add_op(OpBlake2b).unwrap().add_data(hash).unwrap().add_op(OpEqual).unwrap().drain()
+}
+
+fn build_p2sh20_script(hash: &[u8]) -> Vec<u8> {
+    ScriptBuilder::new().add_op(OpBlake2b).unwrap().add_data(hash).unwrap().add_op(OpEqual).unwrap().drain()
 }
 
 #[test]
@@ -238,18 +246,20 @@ fn compiles_mecenas_example_and_verifies() {
     let output0_script = build_p2pkh_script(&recipient);
 
     let result = run_contract_with_tx(
-        compiled.script,
+        compiled.script.clone(),
         output0_script,
+        compiled.script,
         input_value,
         output0_value,
         output1_value,
         sigscript.drain(),
+        0,
     );
     assert!(result.is_ok(), "mecenas example failed: {}", result.unwrap_err());
 }
 
 #[test]
-fn parses_mecenas_locktime_example() {
+fn compiles_mecenas_locktime_example_and_verifies() {
     let source = r#"
         pragma cashscript ^0.12.0;
 
@@ -292,7 +302,48 @@ fn parses_mecenas_locktime_example() {
         }
     "#;
 
-    assert_parses(source);
+    let compiled = compile_contract(source, Some("receive"), CompileOptions::default()).expect("compile succeeds");
+    let recipient = [3u8; 20];
+    let funder = [4u8; 20];
+    let pledge_per_block = 100i64;
+    let initial_block = 900u64;
+    let lock_time = 1000u64;
+    let passed_blocks = lock_time - initial_block;
+    let pledge = passed_blocks as i64 * pledge_per_block;
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(&recipient).unwrap();
+    sigscript.add_data(&funder).unwrap();
+    sigscript.add_i64(pledge_per_block).unwrap();
+    sigscript.add_data(&initial_block.to_le_bytes()).unwrap();
+
+    let input_value = 20000u64;
+    let output0_value = pledge as u64;
+    let output1_value = input_value - pledge as u64 - 1000;
+
+    let output0_script = build_p2pkh_script(&recipient);
+    let mut active_bytecode = Vec::with_capacity(2 + compiled.script.len());
+    active_bytecode.extend_from_slice(&0u16.to_be_bytes());
+    active_bytecode.extend_from_slice(&compiled.script);
+    let mut bc_value = Vec::new();
+    bc_value.push(8u8);
+    bc_value.extend_from_slice(&lock_time.to_le_bytes());
+    bc_value.extend_from_slice(&active_bytecode[9..]);
+    let mut hash = blake2b_simd::Params::new().hash_length(32).to_state().update(&bc_value).finalize().as_bytes().to_vec();
+    hash.truncate(20);
+    let output1_script = build_p2sh20_script(&hash);
+
+    let result = run_contract_with_tx(
+        compiled.script,
+        output0_script,
+        output1_script,
+        input_value,
+        output0_value,
+        output1_value,
+        sigscript.drain(),
+        lock_time,
+    );
+    assert!(result.is_ok(), "mecenas_locktime example failed: {}", result.unwrap_err());
 }
 
 #[test]
