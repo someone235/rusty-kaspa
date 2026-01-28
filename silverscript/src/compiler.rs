@@ -1,0 +1,711 @@
+use std::collections::{HashMap, HashSet};
+
+use kaspa_txscript::opcodes::codes::*;
+use kaspa_txscript::script_builder::{ScriptBuilder, ScriptBuilderError};
+use pest::Parser;
+use pest::iterators::Pair;
+use thiserror::Error;
+
+use crate::parser::{CashScriptParser, Rule};
+
+#[derive(Debug, Error)]
+pub enum CompilerError {
+    #[error("parse error: {0}")]
+    Parse(#[from] pest::error::Error<Rule>),
+    #[error("unsupported feature: {0}")]
+    Unsupported(String),
+    #[error("invalid literal: {0}")]
+    InvalidLiteral(String),
+    #[error("undefined identifier: {0}")]
+    UndefinedIdentifier(String),
+    #[error("cyclic identifier reference: {0}")]
+    CyclicIdentifier(String),
+    #[error("script build error: {0}")]
+    ScriptBuild(#[from] ScriptBuilderError),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CompileOptions {
+    pub covenants_enabled: bool,
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        Self { covenants_enabled: true }
+    }
+}
+
+#[derive(Debug)]
+pub struct CompiledContract {
+    pub contract_name: String,
+    pub function_name: String,
+    pub script: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+enum Expr {
+    Int(i64),
+    Bool(bool),
+    Bytes(Vec<u8>),
+    Identifier(String),
+    Unary { op: UnaryOp, expr: Box<Expr> },
+    Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
+    Nullary(NullaryOp),
+    Introspection { kind: IntrospectionKind, index: Box<Expr> },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UnaryOp {
+    Not,
+    Neg,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BinaryOp {
+    Or,
+    And,
+    BitOr,
+    BitXor,
+    BitAnd,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NullaryOp {
+    ActiveInputIndex,
+    ActiveBytecode,
+    TxInputsLength,
+    TxOutputsLength,
+    TxVersion,
+    TxLockTime,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum IntrospectionKind {
+    InputValue,
+    InputLockingBytecode,
+    OutputValue,
+    OutputLockingBytecode,
+}
+
+pub fn compile_contract(
+    source: &str,
+    function_name: Option<&str>,
+    options: CompileOptions,
+) -> Result<CompiledContract, CompilerError> {
+    let mut pairs = CashScriptParser::parse(Rule::source_file, source)?;
+    let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty source".to_string()))?;
+    let mut inner = source_pair.into_inner();
+
+    let mut contract_name = None;
+    let mut functions = Vec::new();
+
+    while let Some(pair) = inner.next() {
+        match pair.as_rule() {
+            Rule::contract_definition => {
+                let mut contract_inner = pair.into_inner();
+                let name_pair =
+                    contract_inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract name".to_string()))?;
+                contract_name = Some(name_pair.as_str().to_string());
+
+                let _params =
+                    contract_inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract parameters".to_string()))?;
+
+                for fn_pair in contract_inner {
+                    if fn_pair.as_rule() == Rule::function_definition {
+                        functions.push(fn_pair);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let contract_name = contract_name.ok_or_else(|| CompilerError::Unsupported("no contract definition".to_string()))?;
+
+    let target_fn = if let Some(name) = function_name {
+        functions
+            .into_iter()
+            .find(|pair| function_name_from_pair(pair).map(|s| s == name).unwrap_or(false))
+            .ok_or_else(|| CompilerError::Unsupported(format!("function '{name}' not found")))?
+    } else {
+        functions.into_iter().next().ok_or_else(|| CompilerError::Unsupported("contract has no functions".to_string()))?
+    };
+
+    let (fn_name, script) = compile_function(target_fn, options)?;
+
+    Ok(CompiledContract { contract_name, function_name: fn_name, script })
+}
+
+fn function_name_from_pair(pair: &Pair<'_, Rule>) -> Option<String> {
+    let mut inner = pair.clone().into_inner();
+    inner.next().map(|p| p.as_str().to_string())
+}
+
+fn compile_function(pair: Pair<'_, Rule>, options: CompileOptions) -> Result<(String, Vec<u8>), CompilerError> {
+    let mut inner = pair.into_inner();
+    let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
+    let fn_name = name_pair.as_str().to_string();
+
+    let params = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function parameters".to_string()))?;
+    if params.into_inner().next().is_some() {
+        return Err(CompilerError::Unsupported("function parameters are not supported yet".to_string()));
+    }
+
+    let mut env: HashMap<String, Expr> = HashMap::new();
+    let mut builder = ScriptBuilder::new();
+
+    for stmt in inner {
+        compile_statement(stmt, &mut env, &mut builder, options)?;
+    }
+
+    builder.add_op(OpTrue)?;
+    Ok((fn_name, builder.drain()))
+}
+
+fn compile_statement(
+    pair: Pair<'_, Rule>,
+    env: &mut HashMap<String, Expr>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+) -> Result<(), CompilerError> {
+    match pair.as_rule() {
+        Rule::variable_definition => {
+            let mut inner = pair.into_inner();
+            let _type_name = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable type".to_string()))?;
+
+            while let Some(p) = inner.peek() {
+                if p.as_rule() != Rule::modifier {
+                    break;
+                }
+                inner.next();
+            }
+
+            let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable name".to_string()))?;
+            let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing variable initializer".to_string()))?;
+            let expr = parse_expression(expr_pair)?;
+            env.insert(ident.as_str().to_string(), expr);
+            Ok(())
+        }
+        Rule::require_statement => {
+            let mut inner = pair.into_inner();
+            let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing require expression".to_string()))?;
+            let expr = parse_expression(expr_pair)?;
+            compile_expr(&expr, env, builder, options, &mut HashSet::new())?;
+            builder.add_op(OpVerify)?;
+            Ok(())
+        }
+        Rule::time_op_statement => compile_time_op_statement(pair, env, builder, options),
+        Rule::if_statement => compile_if_statement(pair, env, builder, options),
+        Rule::assign_statement | Rule::tuple_assignment | Rule::console_statement => {
+            Err(CompilerError::Unsupported("statement type not supported in compiler yet".to_string()))
+        }
+        Rule::statement => {
+            if let Some(inner) = pair.into_inner().next() {
+                compile_statement(inner, env, builder, options)
+            } else {
+                Ok(())
+            }
+        }
+        _ => Err(CompilerError::Unsupported(format!("unexpected statement: {:?}", pair.as_rule()))),
+    }
+}
+
+fn compile_if_statement(
+    pair: Pair<'_, Rule>,
+    env: &mut HashMap<String, Expr>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+) -> Result<(), CompilerError> {
+    let mut inner = pair.into_inner();
+    let cond_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if condition".to_string()))?;
+    let cond_expr = parse_expression(cond_pair)?;
+    compile_expr(&cond_expr, env, builder, options, &mut HashSet::new())?;
+    builder.add_op(OpIf)?;
+
+    let then_block = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if block".to_string()))?;
+    compile_block(then_block, env, builder, options)?;
+
+    if let Some(else_block) = inner.next() {
+        builder.add_op(OpElse)?;
+        compile_block(else_block, env, builder, options)?;
+    }
+
+    builder.add_op(OpEndIf)?;
+    Ok(())
+}
+
+fn compile_time_op_statement(
+    pair: Pair<'_, Rule>,
+    env: &mut HashMap<String, Expr>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+) -> Result<(), CompilerError> {
+    let mut inner = pair.into_inner();
+    let tx_var = inner.next().ok_or_else(|| CompilerError::Unsupported("missing time op variable".to_string()))?;
+    let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing time op expression".to_string()))?;
+
+    let expr = parse_expression(expr_pair)?;
+    compile_expr(&expr, env, builder, options, &mut HashSet::new())?;
+
+    match tx_var.as_str() {
+        "this.age" => {
+            builder.add_op(OpCheckSequenceVerify)?;
+        }
+        "tx.time" => {
+            builder.add_op(OpCheckLockTimeVerify)?;
+        }
+        _ => return Err(CompilerError::Unsupported(format!("unsupported time variable: {}", tx_var.as_str()))),
+    }
+
+    Ok(())
+}
+
+fn compile_block(
+    pair: Pair<'_, Rule>,
+    env: &mut HashMap<String, Expr>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+) -> Result<(), CompilerError> {
+    match pair.as_rule() {
+        Rule::block => {
+            for stmt in pair.into_inner() {
+                compile_statement(stmt, env, builder, options)?;
+            }
+            Ok(())
+        }
+        _ => compile_statement(pair, env, builder, options),
+    }
+}
+
+fn parse_expression(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    match pair.as_rule() {
+        Rule::expression => parse_expression(single_inner(pair)?),
+        Rule::logical_or => parse_infix(pair, parse_expression, map_logical_or),
+        Rule::logical_and => parse_infix(pair, parse_expression, map_logical_and),
+        Rule::bit_or => parse_infix(pair, parse_expression, map_bit_or),
+        Rule::bit_xor => parse_infix(pair, parse_expression, map_bit_xor),
+        Rule::bit_and => parse_infix(pair, parse_expression, map_bit_and),
+        Rule::equality => parse_infix(pair, parse_expression, map_equality),
+        Rule::comparison => parse_infix(pair, parse_expression, map_comparison),
+        Rule::term => parse_infix(pair, parse_expression, map_term),
+        Rule::factor => parse_infix(pair, parse_expression, map_factor),
+        Rule::unary => parse_unary(pair),
+        Rule::postfix => parse_postfix(pair),
+        Rule::primary => parse_primary(single_inner(pair)?),
+        Rule::parenthesized => parse_expression(single_inner(pair)?),
+        Rule::literal => parse_literal(single_inner(pair)?),
+        Rule::number_literal => parse_number_literal(pair),
+        Rule::NumberLiteral => parse_number(pair.as_str()),
+        Rule::BooleanLiteral => Ok(Expr::Bool(pair.as_str() == "true")),
+        Rule::HexLiteral => parse_hex_literal(pair.as_str()),
+        Rule::Identifier => Ok(Expr::Identifier(pair.as_str().to_string())),
+        Rule::NullaryOp => parse_nullary(pair.as_str()),
+        Rule::introspection => parse_introspection(pair),
+        Rule::array
+        | Rule::cast
+        | Rule::function_call
+        | Rule::instantiation
+        | Rule::split_call
+        | Rule::slice_call
+        | Rule::tuple_index
+        | Rule::unary_suffix
+        | Rule::StringLiteral
+        | Rule::DateLiteral
+        | Rule::Bytes
+        | Rule::type_name => Err(CompilerError::Unsupported(format!("expression not supported: {:?}", pair.as_rule()))),
+        _ => Err(CompilerError::Unsupported(format!("unexpected expression: {:?}", pair.as_rule()))),
+    }
+}
+
+fn parse_unary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let mut inner = pair.into_inner();
+    let mut ops = Vec::new();
+    while let Some(op) = inner.peek() {
+        if op.as_rule() != Rule::unary_op {
+            break;
+        }
+        let op = inner.next().expect("checked").as_str();
+        let op = match op {
+            "!" => UnaryOp::Not,
+            "-" => UnaryOp::Neg,
+            _ => return Err(CompilerError::Unsupported(format!("unary operator '{op}'"))),
+        };
+        ops.push(op);
+    }
+
+    let mut expr = parse_expression(inner.next().ok_or_else(|| CompilerError::Unsupported("missing unary operand".to_string()))?)?;
+    for op in ops.into_iter().rev() {
+        expr = Expr::Unary { op, expr: Box::new(expr) };
+    }
+    Ok(expr)
+}
+
+fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let mut inner = pair.into_inner();
+    let primary = inner.next().ok_or_else(|| CompilerError::Unsupported("missing primary in postfix".to_string()))?;
+    let expr = parse_primary(primary)?;
+    if inner.next().is_some() {
+        return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
+    }
+    Ok(expr)
+}
+
+fn parse_primary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    match pair.as_rule() {
+        Rule::parenthesized => parse_expression(single_inner(pair)?),
+        Rule::literal => parse_literal(single_inner(pair)?),
+        Rule::Identifier => Ok(Expr::Identifier(pair.as_str().to_string())),
+        Rule::NullaryOp => parse_nullary(pair.as_str()),
+        Rule::introspection => parse_introspection(pair),
+        Rule::expression => parse_expression(pair),
+        _ => Err(CompilerError::Unsupported(format!("primary not supported: {:?}", pair.as_rule()))),
+    }
+}
+
+fn parse_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    match pair.as_rule() {
+        Rule::BooleanLiteral => Ok(Expr::Bool(pair.as_str() == "true")),
+        Rule::number_literal => parse_number_literal(pair),
+        Rule::NumberLiteral => parse_number(pair.as_str()),
+        Rule::HexLiteral => parse_hex_literal(pair.as_str()),
+        Rule::StringLiteral => Err(CompilerError::Unsupported("string literals are not supported".to_string())),
+        Rule::DateLiteral => Err(CompilerError::Unsupported("date literals are not supported".to_string())),
+        _ => Err(CompilerError::Unsupported(format!("literal not supported: {:?}", pair.as_rule()))),
+    }
+}
+
+fn parse_number(raw: &str) -> Result<Expr, CompilerError> {
+    let cleaned = raw.replace('_', "");
+    let value: i64 = cleaned.parse().map_err(|_| CompilerError::InvalidLiteral(format!("invalid number literal '{raw}'")))?;
+    Ok(Expr::Int(value))
+}
+
+fn parse_number_literal(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let mut inner = pair.into_inner();
+    let number = inner.next().ok_or_else(|| CompilerError::InvalidLiteral("missing number literal".to_string()))?;
+    if inner.next().is_some() {
+        return Err(CompilerError::Unsupported("number units are not supported yet".to_string()));
+    }
+    parse_number(number.as_str())
+}
+
+fn parse_hex_literal(raw: &str) -> Result<Expr, CompilerError> {
+    let trimmed = raw.trim_start_matches("0x").trim_start_matches("0X");
+    if trimmed.len() % 2 != 0 {
+        return Err(CompilerError::InvalidLiteral(format!("hex literal has odd length: {raw}")));
+    }
+    let bytes = (0..trimmed.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&trimmed[i..i + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| CompilerError::InvalidLiteral(format!("invalid hex literal '{raw}'")))?;
+    Ok(Expr::Bytes(bytes))
+}
+
+fn parse_nullary(raw: &str) -> Result<Expr, CompilerError> {
+    let op = match raw {
+        "this.activeInputIndex" => NullaryOp::ActiveInputIndex,
+        "this.activeBytecode" => NullaryOp::ActiveBytecode,
+        "tx.inputs.length" => NullaryOp::TxInputsLength,
+        "tx.outputs.length" => NullaryOp::TxOutputsLength,
+        "tx.version" => NullaryOp::TxVersion,
+        "tx.locktime" => NullaryOp::TxLockTime,
+        _ => return Err(CompilerError::Unsupported(format!("unknown nullary op: {raw}"))),
+    };
+    Ok(Expr::Nullary(op))
+}
+
+fn parse_introspection(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
+    let text = pair.as_str();
+    let mut inner = pair.into_inner();
+    let index_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing introspection index".to_string()))?;
+    let field_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing introspection field".to_string()))?;
+
+    let index = Box::new(parse_expression(index_pair)?);
+    let field = field_pair.as_str();
+
+    let kind = if text.starts_with("tx.inputs") {
+        match field {
+            ".value" => IntrospectionKind::InputValue,
+            ".lockingBytecode" => IntrospectionKind::InputLockingBytecode,
+            _ => return Err(CompilerError::Unsupported(format!("input field '{field}' not supported"))),
+        }
+    } else if text.starts_with("tx.outputs") {
+        match field {
+            ".value" => IntrospectionKind::OutputValue,
+            ".lockingBytecode" => IntrospectionKind::OutputLockingBytecode,
+            _ => return Err(CompilerError::Unsupported(format!("output field '{field}' not supported"))),
+        }
+    } else {
+        return Err(CompilerError::Unsupported("unknown introspection root".to_string()));
+    };
+
+    Ok(Expr::Introspection { kind, index })
+}
+
+fn single_inner(pair: Pair<'_, Rule>) -> Result<Pair<'_, Rule>, CompilerError> {
+    pair.into_inner().next().ok_or_else(|| CompilerError::Unsupported("expected inner pair".to_string()))
+}
+
+fn parse_infix<F, G>(pair: Pair<'_, Rule>, mut parse_operand: F, mut map_op: G) -> Result<Expr, CompilerError>
+where
+    F: FnMut(Pair<'_, Rule>) -> Result<Expr, CompilerError>,
+    G: FnMut(Pair<'_, Rule>) -> Result<BinaryOp, CompilerError>,
+{
+    let mut inner = pair.into_inner();
+    let first = inner.next().ok_or_else(|| CompilerError::Unsupported("missing infix operand".to_string()))?;
+    let mut expr = parse_operand(first)?;
+
+    while let Some(op_pair) = inner.next() {
+        let rhs = inner.next().ok_or_else(|| CompilerError::Unsupported("missing infix rhs".to_string()))?;
+        let op = map_op(op_pair)?;
+        let rhs_expr = parse_operand(rhs)?;
+        expr = Expr::Binary { op, left: Box::new(expr), right: Box::new(rhs_expr) };
+    }
+
+    Ok(expr)
+}
+
+fn map_logical_or(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
+    match pair.as_rule() {
+        Rule::logical_or_op => Ok(BinaryOp::Or),
+        _ => Err(CompilerError::Unsupported("unexpected logical_or operator".to_string())),
+    }
+}
+
+fn map_logical_and(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
+    match pair.as_rule() {
+        Rule::logical_and_op => Ok(BinaryOp::And),
+        _ => Err(CompilerError::Unsupported("unexpected logical_and operator".to_string())),
+    }
+}
+
+fn map_bit_or(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
+    match pair.as_rule() {
+        Rule::bit_or_op => Ok(BinaryOp::BitOr),
+        _ => Err(CompilerError::Unsupported("unexpected bit_or operator".to_string())),
+    }
+}
+
+fn map_bit_xor(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
+    match pair.as_rule() {
+        Rule::bit_xor_op => Ok(BinaryOp::BitXor),
+        _ => Err(CompilerError::Unsupported("unexpected bit_xor operator".to_string())),
+    }
+}
+
+fn map_bit_and(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
+    match pair.as_rule() {
+        Rule::bit_and_op => Ok(BinaryOp::BitAnd),
+        _ => Err(CompilerError::Unsupported("unexpected bit_and operator".to_string())),
+    }
+}
+
+fn map_equality(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
+    match pair.as_rule() {
+        Rule::equality_op => match pair.as_str() {
+            "==" => Ok(BinaryOp::Eq),
+            "!=" => Ok(BinaryOp::Ne),
+            _ => Err(CompilerError::Unsupported("unexpected equality operator".to_string())),
+        },
+        _ => Err(CompilerError::Unsupported("unexpected equality operator".to_string())),
+    }
+}
+
+fn map_comparison(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
+    match pair.as_rule() {
+        Rule::comparison_op => match pair.as_str() {
+            "<" => Ok(BinaryOp::Lt),
+            "<=" => Ok(BinaryOp::Le),
+            ">" => Ok(BinaryOp::Gt),
+            ">=" => Ok(BinaryOp::Ge),
+            _ => Err(CompilerError::Unsupported("unexpected comparison operator".to_string())),
+        },
+        _ => Err(CompilerError::Unsupported("unexpected comparison operator".to_string())),
+    }
+}
+
+fn map_term(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
+    match pair.as_rule() {
+        Rule::term_op => match pair.as_str() {
+            "+" => Ok(BinaryOp::Add),
+            "-" => Ok(BinaryOp::Sub),
+            _ => Err(CompilerError::Unsupported("unexpected term operator".to_string())),
+        },
+        _ => Err(CompilerError::Unsupported("unexpected term operator".to_string())),
+    }
+}
+
+fn map_factor(pair: Pair<'_, Rule>) -> Result<BinaryOp, CompilerError> {
+    match pair.as_rule() {
+        Rule::factor_op => match pair.as_str() {
+            "*" => Ok(BinaryOp::Mul),
+            "/" => Ok(BinaryOp::Div),
+            "%" => Ok(BinaryOp::Mod),
+            _ => Err(CompilerError::Unsupported("unexpected factor operator".to_string())),
+        },
+        _ => Err(CompilerError::Unsupported("unexpected factor operator".to_string())),
+    }
+}
+
+fn compile_expr(
+    expr: &Expr,
+    env: &HashMap<String, Expr>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    visiting: &mut HashSet<String>,
+) -> Result<(), CompilerError> {
+    match expr {
+        Expr::Int(value) => {
+            builder.add_i64(*value)?;
+            Ok(())
+        }
+        Expr::Bool(value) => {
+            builder.add_op(if *value { OpTrue } else { OpFalse })?;
+            Ok(())
+        }
+        Expr::Bytes(bytes) => {
+            builder.add_data(bytes)?;
+            Ok(())
+        }
+        Expr::Identifier(name) => {
+            if !visiting.insert(name.clone()) {
+                return Err(CompilerError::CyclicIdentifier(name.clone()));
+            }
+            let expr = env.get(name).ok_or_else(|| CompilerError::UndefinedIdentifier(name.clone()))?;
+            compile_expr(expr, env, builder, options, visiting)?;
+            visiting.remove(name);
+            Ok(())
+        }
+        Expr::Unary { op, expr } => {
+            compile_expr(expr, env, builder, options, visiting)?;
+            match op {
+                UnaryOp::Not => builder.add_op(OpNot)?,
+                UnaryOp::Neg => builder.add_op(OpNegate)?,
+            };
+            Ok(())
+        }
+        Expr::Binary { op, left, right } => {
+            compile_expr(left, env, builder, options, visiting)?;
+            compile_expr(right, env, builder, options, visiting)?;
+            match op {
+                BinaryOp::Or => {
+                    builder.add_op(OpBoolOr)?;
+                }
+                BinaryOp::And => {
+                    builder.add_op(OpBoolAnd)?;
+                }
+                BinaryOp::BitOr => {
+                    require_covenants(options, "bitwise or")?;
+                    builder.add_op(OpOr)?;
+                }
+                BinaryOp::BitXor => {
+                    require_covenants(options, "bitwise xor")?;
+                    builder.add_op(OpXor)?;
+                }
+                BinaryOp::BitAnd => {
+                    require_covenants(options, "bitwise and")?;
+                    builder.add_op(OpAnd)?;
+                }
+                BinaryOp::Eq => {
+                    builder.add_op(OpNumEqual)?;
+                }
+                BinaryOp::Ne => {
+                    builder.add_op(OpNumNotEqual)?;
+                }
+                BinaryOp::Lt => {
+                    builder.add_op(OpLessThan)?;
+                }
+                BinaryOp::Le => {
+                    builder.add_op(OpLessThanOrEqual)?;
+                }
+                BinaryOp::Gt => {
+                    builder.add_op(OpGreaterThan)?;
+                }
+                BinaryOp::Ge => {
+                    builder.add_op(OpGreaterThanOrEqual)?;
+                }
+                BinaryOp::Add => {
+                    builder.add_op(OpAdd)?;
+                }
+                BinaryOp::Sub => {
+                    builder.add_op(OpSub)?;
+                }
+                BinaryOp::Mul => {
+                    require_covenants(options, "multiplication")?;
+                    builder.add_op(OpMul)?;
+                }
+                BinaryOp::Div => {
+                    require_covenants(options, "division")?;
+                    builder.add_op(OpDiv)?;
+                }
+                BinaryOp::Mod => {
+                    require_covenants(options, "modulo")?;
+                    builder.add_op(OpMod)?;
+                }
+            }
+            Ok(())
+        }
+        Expr::Nullary(op) => {
+            match op {
+                NullaryOp::ActiveInputIndex => {
+                    builder.add_op(OpTxInputIndex)?;
+                }
+                NullaryOp::ActiveBytecode => {
+                    builder.add_op(OpTxInputIndex)?;
+                    builder.add_op(OpTxInputSpk)?;
+                }
+                NullaryOp::TxInputsLength => {
+                    builder.add_op(OpTxInputCount)?;
+                }
+                NullaryOp::TxOutputsLength => {
+                    builder.add_op(OpTxOutputCount)?;
+                }
+                NullaryOp::TxVersion => {
+                    builder.add_op(OpTxVersion)?;
+                }
+                NullaryOp::TxLockTime => {
+                    builder.add_op(OpTxLockTime)?;
+                }
+            }
+            Ok(())
+        }
+        Expr::Introspection { kind, index } => {
+            compile_expr(index, env, builder, options, visiting)?;
+            match kind {
+                IntrospectionKind::InputValue => {
+                    builder.add_op(OpTxInputAmount)?;
+                }
+                IntrospectionKind::InputLockingBytecode => {
+                    builder.add_op(OpTxInputSpk)?;
+                }
+                IntrospectionKind::OutputValue => {
+                    builder.add_op(OpTxOutputAmount)?;
+                }
+                IntrospectionKind::OutputLockingBytecode => {
+                    builder.add_op(OpTxOutputSpk)?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn require_covenants(options: CompileOptions, feature: &str) -> Result<(), CompilerError> {
+    if options.covenants_enabled {
+        Ok(())
+    } else {
+        Err(CompilerError::Unsupported(format!("{feature} requires covenants-enabled opcodes; confirm covenants_enabled=true")))
+    }
+}

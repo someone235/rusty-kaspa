@@ -12,5 +12,9 @@ name = "silverscript"
 path = "src/lib.rs"
 
 [dependencies]
+kaspa-consensus-core.workspace = true
+kaspa-txscript.workspace = true
+kaspa-txscript-errors.workspace = true
 pest = "2.7"
 pest_derive = "2.7"
+thiserror.workspace = true

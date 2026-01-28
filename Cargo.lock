@@ -5701,8 +5701,12 @@ dependencies = [
 name = "silverscript"
 version = "1.1.0-rc.2"
 dependencies = [
+ "kaspa-consensus-core",
+ "kaspa-txscript",
+ "kaspa-txscript-errors",
  "pest",
  "pest_derive",
+ "thiserror 1.0.64",
 ]
 
 [[package]]
