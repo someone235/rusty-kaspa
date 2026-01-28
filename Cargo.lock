@@ -5706,6 +5706,8 @@ dependencies = [
  "kaspa-txscript-errors",
  "pest",
  "pest_derive",
+ "rand 0.8.5",
+ "secp256k1",
  "thiserror 1.0.64",
 ]
 

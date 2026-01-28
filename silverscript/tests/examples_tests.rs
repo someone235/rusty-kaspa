@@ -1,12 +1,16 @@
 use kaspa_consensus_core::hashing::sighash::SigHashReusedValuesUnsync;
+use kaspa_consensus_core::hashing::sighash::calc_schnorr_signature_hash;
+use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
 use kaspa_consensus_core::tx::{
-    PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint, TransactionOutput,
-    UtxoEntry,
+    MutableTransaction, PopulatedTransaction, ScriptPublicKey, Transaction, TransactionId, TransactionInput, TransactionOutpoint,
+    TransactionOutput, UtxoEntry, VerifiableTransaction,
 };
 use kaspa_txscript::caches::Cache;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
+use rand::thread_rng;
+use secp256k1::Keypair;
 use silverscript::compiler::{CompileOptions, compile_contract};
 use silverscript::parser::parse_source_file;
 
@@ -91,7 +95,7 @@ fn compiles_announcement_example_and_verifies() {
 }
 
 #[test]
-fn parses_hodl_vault_example() {
+fn compiles_hodl_vault_example_and_verifies() {
     let source = r#"
         pragma cashscript ^0.12.0;
 
@@ -116,7 +120,63 @@ fn parses_hodl_vault_example() {
         }
     "#;
 
-    assert_parses(source);
+    let compiled = compile_contract(source, Some("spend"), CompileOptions::default()).expect("compile succeeds");
+
+    let owner = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
+    let oracle = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
+    let owner_pk = owner.x_only_public_key().0.serialize();
+    let oracle_pk = oracle.x_only_public_key().0.serialize();
+
+    let min_block = 900i64;
+    let price_target = 10i64;
+    let block_height = 1000u32;
+    let price = 20u32;
+    let oracle_message = [block_height.to_le_bytes(), price.to_le_bytes()].concat();
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([7u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 1,
+    };
+    let output =
+        TransactionOutput { value: 5000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], block_height as u64, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let sig = owner.sign_schnorr(msg);
+    let mut signature = Vec::new();
+    signature.extend_from_slice(sig.as_ref().as_slice());
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut builder = ScriptBuilder::new();
+    builder.add_data(owner_pk.as_slice()).unwrap();
+    builder.add_data(oracle_pk.as_slice()).unwrap();
+    builder.add_i64(min_block).unwrap();
+    builder.add_i64(price_target).unwrap();
+    builder.add_data(&signature).unwrap();
+    builder.add_data(b"oracle").unwrap();
+    builder.add_data(&oracle_message).unwrap();
+    tx.tx.inputs[0].signature_script = builder.drain();
+
+    let tx = tx.as_verifiable();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &tx,
+        &tx.inputs()[0],
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_ok(), "hodl_vault example failed: {}", result.unwrap_err());
 }
 
 #[test]

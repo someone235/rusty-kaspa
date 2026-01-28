@@ -17,4 +17,6 @@ kaspa-txscript.workspace = true
 kaspa-txscript-errors.workspace = true
 pest = "2.7"
 pest_derive = "2.7"
+rand.workspace = true
+secp256k1.workspace = true
 thiserror.workspace = true

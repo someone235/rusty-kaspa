@@ -52,10 +52,17 @@ enum Expr {
     Array(Vec<Expr>),
     Call { name: String, args: Vec<Expr> },
     New { name: String, args: Vec<Expr> },
+    Split { source: Box<Expr>, index: Box<Expr>, part: SplitPart },
     Unary { op: UnaryOp, expr: Box<Expr> },
     Binary { op: BinaryOp, left: Box<Expr>, right: Box<Expr> },
     Nullary(NullaryOp),
     Introspection { kind: IntrospectionKind, index: Box<Expr> },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SplitPart {
+    Left,
+    Right,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +119,7 @@ pub fn compile_contract(
     let mut inner = source_pair.into_inner();
 
     let mut contract_name = None;
+    let mut contract_params: Vec<String> = Vec::new();
     let mut functions = Vec::new();
 
     while let Some(pair) = inner.next() {
@@ -122,8 +130,9 @@ pub fn compile_contract(
                     contract_inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract name".to_string()))?;
                 contract_name = Some(name_pair.as_str().to_string());
 
-                let _params =
+                let params_pair =
                     contract_inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract parameters".to_string()))?;
+                contract_params = parse_parameter_list(params_pair)?;
 
                 for fn_pair in contract_inner {
                     if fn_pair.as_rule() == Rule::function_definition {
@@ -146,7 +155,7 @@ pub fn compile_contract(
         functions.into_iter().next().ok_or_else(|| CompilerError::Unsupported("contract has no functions".to_string()))?
     };
 
-    let (fn_name, script) = compile_function(target_fn, options)?;
+    let (fn_name, script) = compile_function(target_fn, &contract_params, options)?;
 
     Ok(CompiledContract { contract_name, function_name: fn_name, script })
 }
@@ -156,13 +165,18 @@ fn function_name_from_pair(pair: &Pair<'_, Rule>) -> Option<String> {
     inner.next().map(|p| p.as_str().to_string())
 }
 
-fn compile_function(pair: Pair<'_, Rule>, options: CompileOptions) -> Result<(String, Vec<u8>), CompilerError> {
+fn compile_function(
+    pair: Pair<'_, Rule>,
+    contract_params: &[String],
+    options: CompileOptions,
+) -> Result<(String, Vec<u8>), CompilerError> {
     let mut inner = pair.into_inner();
     let name_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function name".to_string()))?;
     let fn_name = name_pair.as_str().to_string();
 
     let params = inner.next().ok_or_else(|| CompilerError::Unsupported("missing function parameters".to_string()))?;
-    let param_names = parse_parameter_list(params)?;
+    let mut param_names = contract_params.to_vec();
+    param_names.extend(parse_parameter_list(params)?);
     let param_count = param_names.len();
     let params =
         param_names.into_iter().enumerate().map(|(index, name)| (name, (param_count - 1 - index) as i64)).collect::<HashMap<_, _>>();
@@ -218,7 +232,28 @@ fn compile_statement(
         }
         Rule::time_op_statement => compile_time_op_statement(pair, env, params, builder, options),
         Rule::if_statement => compile_if_statement(pair, env, params, builder, options),
-        Rule::assign_statement | Rule::tuple_assignment | Rule::console_statement => {
+        Rule::tuple_assignment => {
+            let mut inner = pair.into_inner();
+            let _type_left = inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple type".to_string()))?;
+            let left_ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple name".to_string()))?;
+            let _type_right = inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple type".to_string()))?;
+            let right_ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing right tuple name".to_string()))?;
+            let expr_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing tuple expression".to_string()))?;
+
+            let expr = parse_expression(expr_pair)?;
+            match expr {
+                Expr::Split { source, index, .. } => {
+                    env.insert(
+                        left_ident.as_str().to_string(),
+                        Expr::Split { source: source.clone(), index: index.clone(), part: SplitPart::Left },
+                    );
+                    env.insert(right_ident.as_str().to_string(), Expr::Split { source, index, part: SplitPart::Right });
+                    Ok(())
+                }
+                _ => Err(CompilerError::Unsupported("tuple assignment only supports split()".to_string())),
+            }
+        }
+        Rule::assign_statement | Rule::console_statement => {
             Err(CompilerError::Unsupported("statement type not supported in compiler yet".to_string()))
         }
         Rule::statement => {
@@ -370,9 +405,19 @@ fn parse_unary(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
 fn parse_postfix(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     let mut inner = pair.into_inner();
     let primary = inner.next().ok_or_else(|| CompilerError::Unsupported("missing primary in postfix".to_string()))?;
-    let expr = parse_primary(primary)?;
-    if inner.next().is_some() {
-        return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
+    let mut expr = parse_primary(primary)?;
+    for postfix in inner {
+        match postfix.as_rule() {
+            Rule::split_call => {
+                let mut split_inner = postfix.into_inner();
+                let index_expr = split_inner.next().ok_or_else(|| CompilerError::Unsupported("missing split index".to_string()))?;
+                let index = Box::new(parse_expression(index_expr)?);
+                expr = Expr::Split { source: Box::new(expr), index, part: SplitPart::Left };
+            }
+            _ => {
+                return Err(CompilerError::Unsupported("postfix operators are not supported".to_string()));
+            }
+        }
     }
     Ok(expr)
 }
@@ -470,6 +515,7 @@ fn parse_cast(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
     };
     match type_name.as_str() {
         "bytes" => Ok(Expr::Call { name: "bytes".to_string(), args }),
+        "int" => Ok(Expr::Call { name: "int".to_string(), args }),
         _ => Err(CompilerError::Unsupported(format!("cast type not supported: {type_name}"))),
     }
 }
@@ -711,6 +757,13 @@ fn compile_expr(
                     _ => Err(CompilerError::Unsupported("bytes() only supports string literals".to_string())),
                 }
             }
+            "int" => {
+                if args.len() != 1 {
+                    return Err(CompilerError::Unsupported("int() expects a single argument".to_string()));
+                }
+                compile_expr(&args[0], env, params, builder, options, visiting, stack_depth)?;
+                Ok(())
+            }
             "blake2b" => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("blake2b() expects a single argument".to_string()));
@@ -831,6 +884,36 @@ fn compile_expr(
             *stack_depth -= 1;
             Ok(())
         }
+        Expr::Split { source, index, part } => {
+            let split_index = match &**index {
+                Expr::Int(value) => *value,
+                _ => return Err(CompilerError::Unsupported("split() index must be a literal integer".to_string())),
+            };
+            if split_index < 0 {
+                return Err(CompilerError::Unsupported("split() index must be non-negative".to_string()));
+            }
+            compile_expr(source, env, params, builder, options, visiting, stack_depth)?;
+            match part {
+                SplitPart::Left => {
+                    builder.add_i64(0)?;
+                    *stack_depth += 1;
+                    builder.add_i64(split_index)?;
+                    *stack_depth += 1;
+                    builder.add_op(OpSubstr)?;
+                    *stack_depth -= 2;
+                }
+                SplitPart::Right => {
+                    builder.add_op(OpSize)?;
+                    *stack_depth += 1;
+                    builder.add_i64(split_index)?;
+                    *stack_depth += 1;
+                    builder.add_op(OpSwap)?;
+                    builder.add_op(OpSubstr)?;
+                    *stack_depth -= 2;
+                }
+            }
+            Ok(())
+        }
         Expr::Nullary(op) => {
             match op {
                 NullaryOp::ActiveInputIndex => {
@@ -883,6 +966,7 @@ fn expr_is_bytes(expr: &Expr, env: &HashMap<String, Expr>) -> bool {
         Expr::String(_) => true,
         Expr::New { name, .. } => matches!(name.as_str(), "LockingBytecodeNullData"),
         Expr::Call { name, .. } => matches!(name.as_str(), "bytes" | "blake2b"),
+        Expr::Split { .. } => true,
         Expr::Introspection { kind, .. } => {
             matches!(kind, IntrospectionKind::InputLockingBytecode | IntrospectionKind::OutputLockingBytecode)
         }
