@@ -118,8 +118,16 @@ fn compiles_announcement_example_and_verifies() {
     let output1_value = input_value - 1000;
 
     let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
-    let result =
-        run_contract_with_tx(compiled.script.clone(), announcement_script, compiled.script, input_value, 0, output1_value, sigscript, 0);
+    let result = run_contract_with_tx(
+        compiled.script.clone(),
+        announcement_script,
+        compiled.script,
+        input_value,
+        0,
+        output1_value,
+        sigscript,
+        0,
+    );
     assert!(result.is_ok(), "announcement example failed: {}", result.unwrap_err());
 }
 
@@ -278,6 +286,91 @@ fn compiles_mecenas_example_and_verifies() {
 }
 
 #[test]
+fn compiles_mecenas_reclaim_and_verifies() {
+    let source = r#"
+        pragma cashscript ^0.12.0;
+
+        contract Mecenas(bytes20 recipient, bytes20 funder, int pledge) {
+            function receive() {
+                require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(recipient));
+
+                int minerFee = 1000;
+                int currentValue = tx.inputs[this.activeInputIndex].value;
+                int changeValue = currentValue - pledge - minerFee;
+
+                if (changeValue <= pledge + minerFee) {
+                    require(tx.outputs[0].value == currentValue - minerFee);
+                } else {
+                    require(tx.outputs[0].value == pledge);
+                    require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
+                    require(tx.outputs[1].value == changeValue);
+                }
+            }
+
+            function reclaim(pubkey pk, sig s) {
+                require(blake2b(pk) == funder);
+                require(checkSig(s, pk));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "reclaim");
+
+    let recipient = [1u8; 20];
+    let funder_key = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
+    let funder_pk = funder_key.x_only_public_key().0.serialize();
+    let mut funder_hash =
+        blake2b_simd::Params::new().hash_length(32).to_state().update(funder_pk.as_slice()).finalize().as_bytes().to_vec();
+    funder_hash.truncate(20);
+    let pledge = 2000i64;
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([15u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 1,
+    };
+    let output =
+        TransactionOutput { value: 5000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let sig = funder_key.sign_schnorr(msg);
+    let mut signature = Vec::new();
+    signature.extend_from_slice(sig.as_ref().as_slice());
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(&recipient).unwrap();
+    sigscript.add_data(&funder_hash).unwrap();
+    sigscript.add_i64(pledge).unwrap();
+    sigscript.add_data(funder_pk.as_slice()).unwrap();
+    sigscript.add_data(&signature).unwrap();
+    sigscript.add_i64(selector).unwrap();
+    tx.tx.inputs[0].signature_script = sigscript.drain();
+
+    let tx = tx.as_verifiable();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &tx,
+        &tx.inputs()[0],
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_ok(), "mecenas reclaim failed: {}", result.unwrap_err());
+}
+
+#[test]
 fn compiles_mecenas_locktime_example_and_verifies() {
     let source = r#"
         pragma cashscript ^0.12.0;
@@ -365,6 +458,108 @@ fn compiles_mecenas_locktime_example_and_verifies() {
         lock_time,
     );
     assert!(result.is_ok(), "mecenas_locktime example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_mecenas_locktime_reclaim_and_verifies() {
+    let source = r#"
+        pragma cashscript ^0.12.0;
+
+        contract Mecenas(
+            bytes20 recipient,
+            bytes20 funder,
+            int pledgePerBlock,
+            bytes8 initialBlock,
+        ) {
+            function receive() {
+                bytes25 recipientLockingBytecode = new LockingBytecodeP2PKH(recipient);
+                require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
+
+                int initial = int(initialBlock);
+                require(tx.time >= initial);
+
+                int passedBlocks = tx.locktime - initial;
+                int pledge = passedBlocks * pledgePerBlock;
+
+                int minerFee = 1000;
+                int currentValue = tx.inputs[this.activeInputIndex].value;
+                int changeValue = currentValue - pledge - minerFee;
+
+                if (changeValue <= pledgePerBlock + minerFee) {
+                    require(tx.outputs[0].value == currentValue - minerFee);
+                } else {
+                    require(tx.outputs[0].value == pledge);
+                    require(tx.outputs[1].value == changeValue);
+
+                    bytes bcValue = 8 + bytes8(tx.locktime) + this.activeBytecode.split(9)[1];
+                    bytes23 lockValue = new LockingBytecodeP2SH20(blake2b(bcValue));
+                    require(tx.outputs[1].lockingBytecode == lockValue);
+                }
+            }
+
+            function reclaim(pubkey pk, sig s) {
+                require(blake2b(pk) == funder);
+                require(checkSig(s, pk));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "reclaim");
+
+    let recipient = [3u8; 20];
+    let funder_key = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
+    let funder_pk = funder_key.x_only_public_key().0.serialize();
+    let mut funder_hash =
+        blake2b_simd::Params::new().hash_length(32).to_state().update(funder_pk.as_slice()).finalize().as_bytes().to_vec();
+    funder_hash.truncate(20);
+    let pledge_per_block = 100i64;
+    let initial_block = 900u64;
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([16u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 1,
+    };
+    let output =
+        TransactionOutput { value: 6000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let sig = funder_key.sign_schnorr(msg);
+    let mut signature = Vec::new();
+    signature.extend_from_slice(sig.as_ref().as_slice());
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(&recipient).unwrap();
+    sigscript.add_data(&funder_hash).unwrap();
+    sigscript.add_i64(pledge_per_block).unwrap();
+    sigscript.add_data(&initial_block.to_le_bytes()).unwrap();
+    sigscript.add_data(funder_pk.as_slice()).unwrap();
+    sigscript.add_data(&signature).unwrap();
+    sigscript.add_i64(selector).unwrap();
+    tx.tx.inputs[0].signature_script = sigscript.drain();
+
+    let tx = tx.as_verifiable();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &tx,
+        &tx.inputs()[0],
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_ok(), "mecenas_locktime reclaim failed: {}", result.unwrap_err());
 }
 
 #[test]
@@ -1058,4 +1253,100 @@ fn compiles_covenant_mecenas_example_and_verifies() {
         period as u64,
     );
     assert!(result.is_ok(), "covenant mecenas example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_covenant_mecenas_reclaim_and_verifies() {
+    let source = r#"
+        pragma cashscript ^0.12.0;
+
+        contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
+            function receive() {
+                require(this.age >= period);
+
+                // Check that the first output sends to the recipient
+                bytes25 recipientLockingBytecode = new LockingBytecodeP2PKH(recipient);
+                require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
+
+                // Calculate the value that's left
+                int minerFee = 1000;
+                int currentValue = tx.inputs[this.activeInputIndex].value;
+                int changeValue = currentValue - pledge - minerFee;
+
+                // If there is not enough left for *another* pledge after this one,
+                // we send the remainder to the recipient. Otherwise we send the
+                // pledge to the recipient and the change back to the contract
+                if (changeValue <= pledge + minerFee) {
+                    require(tx.outputs[0].value == currentValue - minerFee);
+                } else {
+                    require(tx.outputs[0].value == pledge);
+                    bytes changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
+                    require(tx.outputs[1].lockingBytecode == changeBytecode);
+                    require(tx.outputs[1].value == changeValue);
+                }
+            }
+
+            function reclaim(pubkey pk, sig s) {
+                require(blake2b(pk) == funder);
+                require(checkSig(s, pk));
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "reclaim");
+
+    let recipient = [21u8; 20];
+    let funder_key = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
+    let funder_pk = funder_key.x_only_public_key().0.serialize();
+    let mut funder_hash =
+        blake2b_simd::Params::new().hash_length(32).to_state().update(funder_pk.as_slice()).finalize().as_bytes().to_vec();
+    funder_hash.truncate(20);
+    let pledge = 2_000i64;
+    let period = 10i64;
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([17u8; 32]), index: 0 },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 1,
+    };
+    let output =
+        TransactionOutput { value: 7_000, script_public_key: ScriptPublicKey::new(0, compiled.script.clone().into()), covenant: None };
+
+    let tx = Transaction::new(1, vec![input.clone()], vec![output.clone()], 0, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(output.value, ScriptPublicKey::new(0, compiled.script.clone().into()), 0, tx.is_coinbase(), None);
+    let mut tx = MutableTransaction::with_entries(tx, vec![utxo_entry.clone()]);
+
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_hash = calc_schnorr_signature_hash(&tx.as_verifiable(), 0, SIG_HASH_ALL, &reused_values);
+    let msg = secp256k1::Message::from_digest_slice(sig_hash.as_bytes().as_slice()).unwrap();
+    let sig = funder_key.sign_schnorr(msg);
+    let mut signature = Vec::new();
+    signature.extend_from_slice(sig.as_ref().as_slice());
+    signature.push(SIG_HASH_ALL.to_u8());
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(&recipient).unwrap();
+    sigscript.add_data(&funder_hash).unwrap();
+    sigscript.add_i64(pledge).unwrap();
+    sigscript.add_i64(period).unwrap();
+    sigscript.add_data(funder_pk.as_slice()).unwrap();
+    sigscript.add_data(&signature).unwrap();
+    sigscript.add_i64(selector).unwrap();
+    tx.tx.inputs[0].signature_script = sigscript.drain();
+
+    let tx = tx.as_verifiable();
+    let sig_cache = Cache::new(10_000);
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &tx,
+        &tx.inputs()[0],
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+
+    let result = vm.execute();
+    assert!(result.is_ok(), "covenant mecenas reclaim failed: {}", result.unwrap_err());
 }
