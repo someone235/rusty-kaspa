@@ -1,0 +1,11 @@
+contract ForLoop() {
+    int constant START = 0;
+    int constant END = 4;
+    int constant MIN_OUT = 1000;
+
+    function check() {
+        for(i, START, END) {
+            require(tx.outputs[i].value >= MIN_OUT + i);
+        }
+    }
+}

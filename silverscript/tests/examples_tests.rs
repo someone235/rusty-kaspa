@@ -91,6 +91,43 @@ fn run_contract_with_tx_sequence(
     vm.execute()
 }
 
+fn run_contract_with_outputs(
+    script: Vec<u8>,
+    outputs: Vec<(u64, Vec<u8>)>,
+    input_value: u64,
+    sigscript: Vec<u8>,
+    lock_time: u64,
+) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let reused_values = SigHashReusedValuesUnsync::new();
+    let sig_cache = Cache::new(10_000);
+
+    let input = TransactionInput {
+        previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([9u8; 32]), index: 0 },
+        signature_script: sigscript,
+        sequence: 0,
+        sig_op_count: 0,
+    };
+
+    let tx_outputs = outputs
+        .into_iter()
+        .map(|(value, script)| TransactionOutput { value, script_public_key: ScriptPublicKey::new(0, script.into()), covenant: None })
+        .collect::<Vec<_>>();
+
+    let tx = Transaction::new(1, vec![input.clone()], tx_outputs.clone(), lock_time, Default::default(), 0, vec![]);
+    let utxo_entry = UtxoEntry::new(input_value, ScriptPublicKey::new(0, script.clone().into()), 0, tx.is_coinbase(), None);
+    let populated_tx = PopulatedTransaction::new(&tx, vec![utxo_entry.clone()]);
+
+    let mut vm = TxScriptEngine::from_transaction_input(
+        &populated_tx,
+        &input,
+        0,
+        &utxo_entry,
+        EngineCtx::new(&sig_cache).with_reused(&reused_values),
+        EngineFlags { covenants_enabled: true },
+    );
+    vm.execute()
+}
+
 #[test]
 fn compiles_announcement_example_and_verifies() {
     let source = load_example_source("announcement.cash");
@@ -169,6 +206,29 @@ fn compiles_constant_budget_example_and_verifies() {
     let result =
         run_contract_with_tx(compiled.script, output0_script, output1_script, input_value, output0_value, output1_value, sigscript, 0);
     assert!(result.is_ok(), "constant_budget else branch failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_for_loop_example_and_verifies() {
+    let source = load_example_source("for_loop.cash");
+
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "check");
+    let recipient0 = [5u8; 20];
+    let recipient1 = [6u8; 20];
+    let recipient2 = [7u8; 20];
+    let recipient3 = [8u8; 20];
+    let output0_script = build_p2pkh_script(&recipient0);
+    let output1_script = build_p2pkh_script(&recipient1);
+    let output2_script = build_p2pkh_script(&recipient2);
+    let output3_script = build_p2pkh_script(&recipient3);
+
+    // Test check() with loop bounds START..END.
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let input_value = 10_000u64;
+    let outputs = vec![(1000u64, output0_script), (1001u64, output1_script), (1002u64, output2_script), (1003u64, output3_script)];
+    let result = run_contract_with_outputs(compiled.script, outputs, input_value, sigscript, 0);
+    assert!(result.is_ok(), "for_loop example failed: {}", result.unwrap_err());
 }
 
 fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {

@@ -243,7 +243,7 @@ fn compile_function(
     let mut builder = ScriptBuilder::new();
 
     for stmt in inner {
-        compile_statement(stmt, &mut env, &params, &mut builder, options)?;
+        compile_statement(stmt, &mut env, &params, &mut builder, options, contract_constants)?;
     }
 
     for _ in 0..param_count {
@@ -260,6 +260,7 @@ fn compile_statement(
     params: &HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
+    contract_constants: &HashMap<String, Expr>,
 ) -> Result<(), CompilerError> {
     match pair.as_rule() {
         Rule::variable_definition => {
@@ -289,7 +290,8 @@ fn compile_statement(
             Ok(())
         }
         Rule::time_op_statement => compile_time_op_statement(pair, env, params, builder, options),
-        Rule::if_statement => compile_if_statement(pair, env, params, builder, options),
+        Rule::if_statement => compile_if_statement(pair, env, params, builder, options, contract_constants),
+        Rule::for_statement => compile_for_statement(pair, env, params, builder, options, contract_constants),
         Rule::tuple_assignment => {
             let mut inner = pair.into_inner();
             let _type_left = inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple type".to_string()))?;
@@ -316,7 +318,7 @@ fn compile_statement(
         }
         Rule::statement => {
             if let Some(inner) = pair.into_inner().next() {
-                compile_statement(inner, env, params, builder, options)
+                compile_statement(inner, env, params, builder, options, contract_constants)
             } else {
                 Ok(())
             }
@@ -331,6 +333,7 @@ fn compile_if_statement(
     params: &HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
+    contract_constants: &HashMap<String, Expr>,
 ) -> Result<(), CompilerError> {
     let mut inner = pair.into_inner();
     let cond_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if condition".to_string()))?;
@@ -340,11 +343,11 @@ fn compile_if_statement(
     builder.add_op(OpIf)?;
 
     let then_block = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if block".to_string()))?;
-    compile_block(then_block, env, params, builder, options)?;
+    compile_block(then_block, env, params, builder, options, contract_constants)?;
 
     if let Some(else_block) = inner.next() {
         builder.add_op(OpElse)?;
-        compile_block(else_block, env, params, builder, options)?;
+        compile_block(else_block, env, params, builder, options, contract_constants)?;
     }
 
     builder.add_op(OpEndIf)?;
@@ -385,16 +388,58 @@ fn compile_block(
     params: &HashMap<String, i64>,
     builder: &mut ScriptBuilder,
     options: CompileOptions,
+    contract_constants: &HashMap<String, Expr>,
 ) -> Result<(), CompilerError> {
     match pair.as_rule() {
         Rule::block => {
             for stmt in pair.into_inner() {
-                compile_statement(stmt, env, params, builder, options)?;
+                compile_statement(stmt, env, params, builder, options, contract_constants)?;
             }
             Ok(())
         }
-        _ => compile_statement(pair, env, params, builder, options),
+        _ => compile_statement(pair, env, params, builder, options, contract_constants),
     }
+}
+
+fn compile_for_statement(
+    pair: Pair<'_, Rule>,
+    env: &mut HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
+    builder: &mut ScriptBuilder,
+    options: CompileOptions,
+    contract_constants: &HashMap<String, Expr>,
+) -> Result<(), CompilerError> {
+    let mut inner = pair.into_inner();
+    let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop identifier".to_string()))?;
+    let start_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop start".to_string()))?;
+    let end_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop end".to_string()))?;
+    let block_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop body".to_string()))?;
+
+    let start_expr = parse_expression(start_pair)?;
+    let end_expr = parse_expression(end_pair)?;
+    let start = eval_const_int(&start_expr, contract_constants)?;
+    let end = eval_const_int(&end_expr, contract_constants)?;
+    if end < start {
+        return Err(CompilerError::Unsupported("for loop end must be >= start".to_string()));
+    }
+
+    let name = ident.as_str().to_string();
+    let previous = env.get(&name).cloned();
+    for value in start..end {
+        env.insert(name.clone(), Expr::Int(value));
+        compile_block(block_pair.clone(), env, params, builder, options, contract_constants)?;
+    }
+
+    match previous {
+        Some(expr) => {
+            env.insert(name, expr);
+        }
+        None => {
+            env.remove(&name);
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_expression(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
@@ -434,6 +479,41 @@ fn parse_expression(pair: Pair<'_, Rule>) -> Result<Expr, CompilerError> {
         | Rule::Bytes
         | Rule::type_name => Err(CompilerError::Unsupported(format!("expression not supported: {:?}", pair.as_rule()))),
         _ => Err(CompilerError::Unsupported(format!("unexpected expression: {:?}", pair.as_rule()))),
+    }
+}
+
+fn eval_const_int(expr: &Expr, constants: &HashMap<String, Expr>) -> Result<i64, CompilerError> {
+    match expr {
+        Expr::Int(value) => Ok(*value),
+        Expr::Identifier(name) => match constants.get(name) {
+            Some(value) => eval_const_int(value, constants),
+            None => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
+        },
+        Expr::Unary { op: UnaryOp::Neg, expr } => Ok(-eval_const_int(expr, constants)?),
+        Expr::Unary { .. } => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
+        Expr::Binary { op, left, right } => {
+            let lhs = eval_const_int(left, constants)?;
+            let rhs = eval_const_int(right, constants)?;
+            match op {
+                BinaryOp::Add => Ok(lhs + rhs),
+                BinaryOp::Sub => Ok(lhs - rhs),
+                BinaryOp::Mul => Ok(lhs * rhs),
+                BinaryOp::Div => {
+                    if rhs == 0 {
+                        return Err(CompilerError::InvalidLiteral("division by zero in for loop bounds".to_string()));
+                    }
+                    Ok(lhs / rhs)
+                }
+                BinaryOp::Mod => {
+                    if rhs == 0 {
+                        return Err(CompilerError::InvalidLiteral("modulo by zero in for loop bounds".to_string()));
+                    }
+                    Ok(lhs % rhs)
+                }
+                _ => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
+            }
+        }
+        _ => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
     }
 }
 
