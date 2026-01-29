@@ -133,6 +133,44 @@ fn compiles_announcement_example_and_verifies() {
     assert!(result.is_ok(), "announcement small change failed: {}", result.unwrap_err());
 }
 
+#[test]
+fn compiles_constant_budget_example_and_verifies() {
+    let source = load_example_source("constant_budget.cash");
+
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "spend");
+    let recipient0 = [2u8; 20];
+    let recipient1 = [3u8; 20];
+    let output0_script = build_p2pkh_script(&recipient0);
+    let output1_script = build_p2pkh_script(&recipient1);
+
+    // Test spend() with output1 >= MIN_CHANGE (if branch).
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let input_value = 4000u64;
+    let output0_value = 1500u64;
+    let output1_value = 1200u64;
+    let result = run_contract_with_tx(
+        compiled.script.clone(),
+        output0_script.clone(),
+        output1_script.clone(),
+        input_value,
+        output0_value,
+        output1_value,
+        sigscript,
+        0,
+    );
+    assert!(result.is_ok(), "constant_budget if branch failed: {}", result.unwrap_err());
+
+    // Test spend() with output1 < MIN_CHANGE (else branch).
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let input_value = 3000u64;
+    let output0_value = 1300u64;
+    let output1_value = 500u64;
+    let result =
+        run_contract_with_tx(compiled.script, output0_script, output1_script, input_value, output0_value, output1_value, sigscript, 0);
+    assert!(result.is_ok(), "constant_budget else branch failed: {}", result.unwrap_err());
+}
+
 fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {
     ScriptBuilder::new().add_op(OpBlake2b).unwrap().add_data(hash).unwrap().add_op(OpEqual).unwrap().drain()
 }

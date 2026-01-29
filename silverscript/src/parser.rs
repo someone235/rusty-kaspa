@@ -1,6 +1,6 @@
+use pest::Parser;
 use pest::error::Error;
 use pest::iterators::Pairs;
-use pest::Parser;
 use pest_derive::Parser;
 use solang_parser::diagnostics::Diagnostic as SolidityDiagnostic;
 use solang_parser::pt::{Comment as SolidityComment, SourceUnit as SoliditySourceUnit};

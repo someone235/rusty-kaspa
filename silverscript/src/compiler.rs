@@ -156,9 +156,7 @@ pub fn function_branch_index(source: &str, function_name: &str) -> Result<i64, C
     Err(CompilerError::Unsupported(format!("function '{function_name}' not found")))
 }
 
-fn parse_contract(
-    source: &str,
-) -> Result<(String, Vec<String>, Vec<Pair<'_, Rule>>, HashMap<String, Expr>), CompilerError> {
+fn parse_contract(source: &str) -> Result<(String, Vec<String>, Vec<Pair<'_, Rule>>, HashMap<String, Expr>), CompilerError> {
     let mut pairs = CashScriptParser::parse(Rule::source_file, source)?;
     let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty source".to_string()))?;
     let mut inner = source_pair.into_inner();
