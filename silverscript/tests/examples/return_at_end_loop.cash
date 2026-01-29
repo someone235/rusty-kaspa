@@ -1,0 +1,10 @@
+contract ReturnLoop() {
+    int constant START = 0;
+    int constant END = 4;
+
+    function main() {
+        for(i, START, END) {
+            return_at_end(i + 1);
+        }
+    }
+}

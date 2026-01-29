@@ -241,16 +241,29 @@ fn compile_function(
 
     let mut env: HashMap<String, Expr> = contract_constants.clone();
     let mut builder = ScriptBuilder::new();
+    let mut returns: Vec<Expr> = Vec::new();
 
     for stmt in inner {
-        compile_statement(stmt, &mut env, &params, &mut builder, options, contract_constants)?;
+        compile_statement(stmt, &mut env, &params, &mut builder, options, contract_constants, &mut returns)?;
     }
 
-    for _ in 0..param_count {
-        builder.add_op(OpDrop)?;
+    let return_count = returns.len();
+    if return_count == 0 {
+        for _ in 0..param_count {
+            builder.add_op(OpDrop)?;
+        }
+        builder.add_op(OpTrue)?;
+    } else {
+        let mut stack_depth = 0i64;
+        for expr in &returns {
+            compile_expr(expr, &env, &params, &mut builder, options, &mut HashSet::new(), &mut stack_depth)?;
+        }
+        for _ in 0..param_count {
+            builder.add_i64(return_count as i64)?;
+            builder.add_op(OpRoll)?;
+            builder.add_op(OpDrop)?;
+        }
     }
-
-    builder.add_op(OpTrue)?;
     Ok((fn_name, builder.drain()))
 }
 
@@ -261,6 +274,7 @@ fn compile_statement(
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
+    returns: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     match pair.as_rule() {
         Rule::variable_definition => {
@@ -290,8 +304,20 @@ fn compile_statement(
             Ok(())
         }
         Rule::time_op_statement => compile_time_op_statement(pair, env, params, builder, options),
-        Rule::if_statement => compile_if_statement(pair, env, params, builder, options, contract_constants),
-        Rule::for_statement => compile_for_statement(pair, env, params, builder, options, contract_constants),
+        Rule::if_statement => compile_if_statement(pair, env, params, builder, options, contract_constants, returns),
+        Rule::for_statement => compile_for_statement(pair, env, params, builder, options, contract_constants, returns),
+        Rule::return_at_end_statement => {
+            let mut inner = pair.into_inner();
+            let list_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing return_at_end arguments".to_string()))?;
+            let args = parse_expression_list(list_pair)?;
+            if args.len() != 1 {
+                return Err(CompilerError::Unsupported("return_at_end() expects a single argument".to_string()));
+            }
+            let mut visiting = HashSet::new();
+            let resolved = resolve_expr(args[0].clone(), env, &mut visiting)?;
+            returns.push(resolved);
+            Ok(())
+        }
         Rule::tuple_assignment => {
             let mut inner = pair.into_inner();
             let _type_left = inner.next().ok_or_else(|| CompilerError::Unsupported("missing left tuple type".to_string()))?;
@@ -318,7 +344,7 @@ fn compile_statement(
         }
         Rule::statement => {
             if let Some(inner) = pair.into_inner().next() {
-                compile_statement(inner, env, params, builder, options, contract_constants)
+                compile_statement(inner, env, params, builder, options, contract_constants, returns)
             } else {
                 Ok(())
             }
@@ -334,6 +360,7 @@ fn compile_if_statement(
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
+    returns: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     let mut inner = pair.into_inner();
     let cond_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if condition".to_string()))?;
@@ -343,11 +370,11 @@ fn compile_if_statement(
     builder.add_op(OpIf)?;
 
     let then_block = inner.next().ok_or_else(|| CompilerError::Unsupported("missing if block".to_string()))?;
-    compile_block(then_block, env, params, builder, options, contract_constants)?;
+    compile_block(then_block, env, params, builder, options, contract_constants, returns)?;
 
     if let Some(else_block) = inner.next() {
         builder.add_op(OpElse)?;
-        compile_block(else_block, env, params, builder, options, contract_constants)?;
+        compile_block(else_block, env, params, builder, options, contract_constants, returns)?;
     }
 
     builder.add_op(OpEndIf)?;
@@ -389,15 +416,16 @@ fn compile_block(
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
+    returns: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     match pair.as_rule() {
         Rule::block => {
             for stmt in pair.into_inner() {
-                compile_statement(stmt, env, params, builder, options, contract_constants)?;
+                compile_statement(stmt, env, params, builder, options, contract_constants, returns)?;
             }
             Ok(())
         }
-        _ => compile_statement(pair, env, params, builder, options, contract_constants),
+        _ => compile_statement(pair, env, params, builder, options, contract_constants, returns),
     }
 }
 
@@ -408,6 +436,7 @@ fn compile_for_statement(
     builder: &mut ScriptBuilder,
     options: CompileOptions,
     contract_constants: &HashMap<String, Expr>,
+    returns: &mut Vec<Expr>,
 ) -> Result<(), CompilerError> {
     let mut inner = pair.into_inner();
     let ident = inner.next().ok_or_else(|| CompilerError::Unsupported("missing for loop identifier".to_string()))?;
@@ -427,7 +456,7 @@ fn compile_for_statement(
     let previous = env.get(&name).cloned();
     for value in start..end {
         env.insert(name.clone(), Expr::Int(value));
-        compile_block(block_pair.clone(), env, params, builder, options, contract_constants)?;
+        compile_block(block_pair.clone(), env, params, builder, options, contract_constants, returns)?;
     }
 
     match previous {
@@ -514,6 +543,57 @@ fn eval_const_int(expr: &Expr, constants: &HashMap<String, Expr>) -> Result<i64,
             }
         }
         _ => Err(CompilerError::Unsupported("for loop bounds must be constant integers".to_string())),
+    }
+}
+
+fn resolve_expr(expr: Expr, env: &HashMap<String, Expr>, visiting: &mut HashSet<String>) -> Result<Expr, CompilerError> {
+    match expr {
+        Expr::Identifier(name) => {
+            if let Some(value) = env.get(&name) {
+                if !visiting.insert(name.clone()) {
+                    return Err(CompilerError::CyclicIdentifier(name));
+                }
+                let resolved = resolve_expr(value.clone(), env, visiting)?;
+                visiting.remove(&name);
+                Ok(resolved)
+            } else {
+                Ok(Expr::Identifier(name))
+            }
+        }
+        Expr::Unary { op, expr } => Ok(Expr::Unary { op, expr: Box::new(resolve_expr(*expr, env, visiting)?) }),
+        Expr::Binary { op, left, right } => Ok(Expr::Binary {
+            op,
+            left: Box::new(resolve_expr(*left, env, visiting)?),
+            right: Box::new(resolve_expr(*right, env, visiting)?),
+        }),
+        Expr::Array(values) => {
+            let mut resolved = Vec::with_capacity(values.len());
+            for value in values {
+                resolved.push(resolve_expr(value, env, visiting)?);
+            }
+            Ok(Expr::Array(resolved))
+        }
+        Expr::Call { name, args } => {
+            let mut resolved = Vec::with_capacity(args.len());
+            for arg in args {
+                resolved.push(resolve_expr(arg, env, visiting)?);
+            }
+            Ok(Expr::Call { name, args: resolved })
+        }
+        Expr::New { name, args } => {
+            let mut resolved = Vec::with_capacity(args.len());
+            for arg in args {
+                resolved.push(resolve_expr(arg, env, visiting)?);
+            }
+            Ok(Expr::New { name, args: resolved })
+        }
+        Expr::Split { source, index, part } => Ok(Expr::Split {
+            source: Box::new(resolve_expr(*source, env, visiting)?),
+            index: Box::new(resolve_expr(*index, env, visiting)?),
+            part,
+        }),
+        Expr::Introspection { kind, index } => Ok(Expr::Introspection { kind, index: Box::new(resolve_expr(*index, env, visiting)?) }),
+        other => Ok(other),
     }
 }
 

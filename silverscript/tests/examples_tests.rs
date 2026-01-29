@@ -128,6 +128,17 @@ fn run_contract_with_outputs(
     vm.execute()
 }
 
+fn script_with_return_checks(script: Vec<u8>, expected: &[i64]) -> Vec<u8> {
+    let mut builder = ScriptBuilder::new();
+    builder.add_ops(&script).unwrap();
+    for value in expected.iter().rev() {
+        builder.add_i64(*value).unwrap();
+        builder.add_op(OpEqualVerify).unwrap();
+    }
+    builder.add_op(OpTrue).unwrap();
+    builder.drain()
+}
+
 #[test]
 fn compiles_announcement_example_and_verifies() {
     let source = load_example_source("announcement.cash");
@@ -253,6 +264,42 @@ fn compiles_for_loop_example_and_verifies() {
     let outputs = vec![(1000u64, output0_script), (1001u64, output1_script), (1002u64, output2_script)];
     let result = run_contract_with_outputs(compiled.script, outputs, input_value, sigscript, 0);
     assert!(result.is_err(), "for_loop with too few outputs should error");
+}
+
+#[test]
+fn compiles_return_at_end_basic_example_and_verifies() {
+    let source = load_example_source("return_at_end_basic.cash");
+
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "main");
+    let script = script_with_return_checks(compiled.script, &[12, 8]);
+    let recipient0 = [9u8; 20];
+    let recipient1 = [10u8; 20];
+    let output0_script = build_p2pkh_script(&recipient0);
+    let output1_script = build_p2pkh_script(&recipient1);
+
+    // Test main(b=8) returns [12, 8] on stack.
+    let sigscript = ScriptBuilder::new().add_i64(8).unwrap().add_i64(selector).unwrap().drain();
+    let result = run_contract_with_tx(script, output0_script, output1_script, 2000, 500, 500, sigscript, 0);
+    assert!(result.is_ok(), "return_at_end basic failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_return_at_end_loop_example_and_verifies() {
+    let source = load_example_source("return_at_end_loop.cash");
+
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "main");
+    let script = script_with_return_checks(compiled.script, &[1, 2, 3, 4]);
+    let recipient0 = [11u8; 20];
+    let recipient1 = [12u8; 20];
+    let output0_script = build_p2pkh_script(&recipient0);
+    let output1_script = build_p2pkh_script(&recipient1);
+
+    // Test main() returns loop values [1,2,3,4] on stack.
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let result = run_contract_with_tx(script, output0_script, output1_script, 2000, 500, 500, sigscript, 0);
+    assert!(result.is_ok(), "return_at_end loop failed: {}", result.unwrap_err());
 }
 
 fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {
