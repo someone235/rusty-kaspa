@@ -306,12 +306,12 @@ fn compile_statement(
         Rule::time_op_statement => compile_time_op_statement(pair, env, params, builder, options),
         Rule::if_statement => compile_if_statement(pair, env, params, builder, options, contract_constants, returns),
         Rule::for_statement => compile_for_statement(pair, env, params, builder, options, contract_constants, returns),
-        Rule::return_at_end_statement => {
+        Rule::yield_statement => {
             let mut inner = pair.into_inner();
-            let list_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing return_at_end arguments".to_string()))?;
+            let list_pair = inner.next().ok_or_else(|| CompilerError::Unsupported("missing yield arguments".to_string()))?;
             let args = parse_expression_list(list_pair)?;
             if args.len() != 1 {
-                return Err(CompilerError::Unsupported("return_at_end() expects a single argument".to_string()));
+                return Err(CompilerError::Unsupported("yield() expects a single argument".to_string()));
             }
             let mut visiting = HashSet::new();
             let resolved = resolve_expr(args[0].clone(), env, &mut visiting)?;

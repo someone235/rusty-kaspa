@@ -267,8 +267,8 @@ fn compiles_for_loop_example_and_verifies() {
 }
 
 #[test]
-fn compiles_return_at_end_basic_example_and_verifies() {
-    let source = load_example_source("return_at_end_basic.cash");
+fn compiles_yield_basic_example_and_verifies() {
+    let source = load_example_source("yield_basic.cash");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&source, "main");
@@ -281,12 +281,12 @@ fn compiles_return_at_end_basic_example_and_verifies() {
     // Test main(b=8) returns [12, 8] on stack.
     let sigscript = ScriptBuilder::new().add_i64(8).unwrap().add_i64(selector).unwrap().drain();
     let result = run_contract_with_tx(script, output0_script, output1_script, 2000, 500, 500, sigscript, 0);
-    assert!(result.is_ok(), "return_at_end basic failed: {}", result.unwrap_err());
+    assert!(result.is_ok(), "yield basic failed: {}", result.unwrap_err());
 }
 
 #[test]
-fn compiles_return_at_end_loop_example_and_verifies() {
-    let source = load_example_source("return_at_end_loop.cash");
+fn compiles_yield_loop_example_and_verifies() {
+    let source = load_example_source("yield_loop.cash");
 
     let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
     let selector = selector_for(&source, "main");
@@ -299,7 +299,7 @@ fn compiles_return_at_end_loop_example_and_verifies() {
     // Test main() returns loop values [1,2,3,4] on stack.
     let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
     let result = run_contract_with_tx(script, output0_script, output1_script, 2000, 500, 500, sigscript, 0);
-    assert!(result.is_ok(), "return_at_end loop failed: {}", result.unwrap_err());
+    assert!(result.is_ok(), "yield loop failed: {}", result.unwrap_err());
 }
 
 fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {

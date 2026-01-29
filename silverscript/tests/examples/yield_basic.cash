@@ -1,10 +1,10 @@
-contract ReturnBasic(int b) {
+contract YieldBasic(int b) {
     function main() {
         int a = 5;
         int x = a + 7;
-        return_at_end(x);
+        yield(x);
         int c = b * b;
         require(c == 64);
-        return_at_end(b);
+        yield(b);
     }
 }
