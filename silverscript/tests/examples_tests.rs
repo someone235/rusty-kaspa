@@ -226,9 +226,33 @@ fn compiles_for_loop_example_and_verifies() {
     // Test check() with loop bounds START..END.
     let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
     let input_value = 10_000u64;
-    let outputs = vec![(1000u64, output0_script), (1001u64, output1_script), (1002u64, output2_script), (1003u64, output3_script)];
-    let result = run_contract_with_outputs(compiled.script, outputs, input_value, sigscript, 0);
+    let outputs = vec![
+        (1000u64, output0_script.clone()),
+        (1001u64, output1_script.clone()),
+        (1002u64, output2_script.clone()),
+        (1003u64, output3_script.clone()),
+    ];
+    let result = run_contract_with_outputs(compiled.script.clone(), outputs, input_value, sigscript, 0);
     assert!(result.is_ok(), "for_loop example failed: {}", result.unwrap_err());
+
+    // Test check() failure when require fails in the loop.
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let input_value = 10_000u64;
+    let outputs = vec![
+        (1000u64, output0_script.clone()),
+        (1001u64, output1_script.clone()),
+        (999u64, output2_script.clone()),
+        (1003u64, output3_script.clone()),
+    ];
+    let result = run_contract_with_outputs(compiled.script.clone(), outputs, input_value, sigscript, 0);
+    assert!(result.is_err(), "for_loop require failure should error");
+
+    // Test check() failure when there are fewer than 4 outputs.
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let input_value = 10_000u64;
+    let outputs = vec![(1000u64, output0_script), (1001u64, output1_script), (1002u64, output2_script)];
+    let result = run_contract_with_outputs(compiled.script, outputs, input_value, sigscript, 0);
+    assert!(result.is_err(), "for_loop with too few outputs should error");
 }
 
 fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {
