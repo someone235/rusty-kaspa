@@ -116,6 +116,31 @@ fn compiles_announcement_example_and_verifies() {
     assert!(result.is_ok(), "announcement example failed: {}", result.unwrap_err());
 }
 
+#[test]
+fn compiles_announcement_example_with_small_change_and_verifies() {
+    let source = load_example_source("announcement.cash");
+
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "announce");
+    let message = "A contract may not injure a human being or, through inaction, allow a human being to come to harm.";
+    let announcement_script = build_null_data_script(27906, message);
+    let input_value = 1500u64;
+    let output1_value = 1u64;
+
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    let result = run_contract_with_tx(
+        compiled.script.clone(),
+        announcement_script,
+        compiled.script,
+        input_value,
+        0,
+        output1_value,
+        sigscript,
+        0,
+    );
+    assert!(result.is_ok(), "announcement small change failed: {}", result.unwrap_err());
+}
+
 fn build_p2pkh_script(hash: &[u8]) -> Vec<u8> {
     ScriptBuilder::new().add_op(OpBlake2b).unwrap().add_data(hash).unwrap().add_op(OpEqual).unwrap().drain()
 }
@@ -221,6 +246,40 @@ fn compiles_mecenas_example_and_verifies() {
         0,
     );
     assert!(result.is_ok(), "mecenas example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_mecenas_example_with_small_change_and_verifies() {
+    let source = load_example_source("mecenas.cash");
+
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "receive");
+    let recipient = [1u8; 20];
+    let funder = [2u8; 20];
+    let pledge = 2000i64;
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(&recipient).unwrap();
+    sigscript.add_data(&funder).unwrap();
+    sigscript.add_i64(pledge).unwrap();
+    sigscript.add_i64(selector).unwrap();
+
+    let input_value = 6000u64;
+    let output0_value = input_value - 1000;
+    let output1_value = 0u64;
+    let output0_script = build_p2pkh_script(&recipient);
+
+    let result = run_contract_with_tx(
+        compiled.script.clone(),
+        output0_script,
+        compiled.script,
+        input_value,
+        output0_value,
+        output1_value,
+        sigscript.drain(),
+        0,
+    );
+    assert!(result.is_ok(), "mecenas small change failed: {}", result.unwrap_err());
 }
 
 #[test]
@@ -331,6 +390,44 @@ fn compiles_mecenas_locktime_example_and_verifies() {
         lock_time,
     );
     assert!(result.is_ok(), "mecenas_locktime example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_mecenas_locktime_example_with_small_change_and_verifies() {
+    let source = load_example_source("mecenas_locktime.cash");
+
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "receive");
+    let recipient = [3u8; 20];
+    let funder = [4u8; 20];
+    let pledge_per_block = 100i64;
+    let initial_block = 900u64;
+    let lock_time = 1000u64;
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(&recipient).unwrap();
+    sigscript.add_data(&funder).unwrap();
+    sigscript.add_i64(pledge_per_block).unwrap();
+    sigscript.add_data(&initial_block.to_le_bytes()).unwrap();
+    sigscript.add_i64(selector).unwrap();
+
+    let input_value = 11000u64;
+    let output0_value = input_value - 1000;
+    let output1_value = 0u64;
+
+    let output0_script = build_p2pkh_script(&recipient);
+
+    let result = run_contract_with_tx(
+        compiled.script.clone(),
+        output0_script,
+        compiled.script,
+        input_value,
+        output0_value,
+        output1_value,
+        sigscript.drain(),
+        lock_time,
+    );
+    assert!(result.is_ok(), "mecenas_locktime small change failed: {}", result.unwrap_err());
 }
 
 #[test]
@@ -884,7 +981,7 @@ fn compiles_covenant_mecenas_example_and_verifies() {
     sigscript.add_i64(period).unwrap();
     sigscript.add_i64(selector).unwrap();
 
-    let input_value = 10_000u64;
+    let input_value = 10000u64;
     let output0_value = pledge as u64;
     let output1_value = input_value - pledge as u64 - 1000;
     let output0_script = build_p2pkh_script(&recipient);
@@ -901,6 +998,43 @@ fn compiles_covenant_mecenas_example_and_verifies() {
         period as u64,
     );
     assert!(result.is_ok(), "covenant mecenas example failed: {}", result.unwrap_err());
+}
+
+#[test]
+fn compiles_covenant_mecenas_example_with_small_change_and_verifies() {
+    let source = load_example_source("covenant_mecenas.cash");
+
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "receive");
+    let recipient = [21u8; 20];
+    let funder = [22u8; 20];
+    let pledge = 2_000i64;
+    let period = 10i64;
+
+    let mut sigscript = ScriptBuilder::new();
+    sigscript.add_data(&recipient).unwrap();
+    sigscript.add_data(&funder).unwrap();
+    sigscript.add_i64(pledge).unwrap();
+    sigscript.add_i64(period).unwrap();
+    sigscript.add_i64(selector).unwrap();
+
+    let input_value = 6000u64;
+    let output0_value = input_value - 1000;
+    let output1_value = 0u64;
+    let output0_script = build_p2pkh_script(&recipient);
+
+    let result = run_contract_with_tx_sequence(
+        compiled.script.clone(),
+        output0_script,
+        compiled.script,
+        input_value,
+        output0_value,
+        output1_value,
+        sigscript.drain(),
+        0,
+        period as u64,
+    );
+    assert!(result.is_ok(), "covenant mecenas small change failed: {}", result.unwrap_err());
 }
 
 #[test]
