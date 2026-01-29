@@ -6,8 +6,11 @@ pragma_value = { version_constraint ~ version_constraint? }
 version_constraint = { version_operator? ~ VersionLiteral }
 version_operator = { "^" | "~" | ">=" | ">" | "<" | "<=" | "=" }
 
-contract_definition = { "contract" ~ Identifier ~ parameter_list ~ "{" ~ function_definition* ~ "}" }
+contract_definition = { "contract" ~ Identifier ~ parameter_list ~ "{" ~ contract_item* ~ "}" }
+contract_item = { constant_definition | function_definition }
 function_definition = { "function" ~ Identifier ~ parameter_list ~ "{" ~ statement* ~ "}" }
+
+constant_definition = { type_name ~ "constant" ~ Identifier ~ "=" ~ expression ~ ";" }
 
 parameter_list = { "(" ~ (parameter ~ ("," ~ parameter)* ~ ","?)? ~ ")" }
 parameter = { type_name ~ Identifier }
@@ -142,7 +145,7 @@ Identifier = @{ !keyword ~ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
 
 keyword = {
     "pragma" | "cashscript" | "contract" | "function" | "if" | "else" | "require"
-    | "console.log" | "new" | "true" | "false"
+    | "console.log" | "new" | "true" | "false" | "constant"
     | "int" | "bool" | "string" | "pubkey" | "sig" | "datasig" | "byte" | "bytes"
     | "this.age" | "tx.time" | "this.activeInputIndex" | "this.activeBytecode"
     | "tx.inputs.length" | "tx.outputs.length" | "tx.version" | "tx.locktime"

@@ -110,14 +110,14 @@ enum IntrospectionKind {
 }
 
 pub fn compile_contract(source: &str, options: CompileOptions) -> Result<CompiledContract, CompilerError> {
-    let (contract_name, contract_params, functions) = parse_contract(source)?;
+    let (contract_name, contract_params, functions, constants) = parse_contract(source)?;
     if functions.is_empty() {
         return Err(CompilerError::Unsupported("contract has no functions".to_string()));
     }
 
     let mut compiled_functions = Vec::new();
     for fn_pair in functions {
-        compiled_functions.push(compile_function(fn_pair, &contract_params, options)?);
+        compiled_functions.push(compile_function(fn_pair, &contract_params, &constants, options)?);
     }
 
     let mut builder = ScriptBuilder::new();
@@ -147,7 +147,7 @@ pub fn compile_contract(source: &str, options: CompileOptions) -> Result<Compile
 }
 
 pub fn function_branch_index(source: &str, function_name: &str) -> Result<i64, CompilerError> {
-    let (_, _, functions) = parse_contract(source)?;
+    let (_, _, functions, _) = parse_contract(source)?;
     for (index, pair) in functions.iter().enumerate() {
         if function_name_from_pair(pair).map(|s| s == function_name).unwrap_or(false) {
             return Ok(index as i64);
@@ -156,7 +156,9 @@ pub fn function_branch_index(source: &str, function_name: &str) -> Result<i64, C
     Err(CompilerError::Unsupported(format!("function '{function_name}' not found")))
 }
 
-fn parse_contract(source: &str) -> Result<(String, Vec<String>, Vec<Pair<'_, Rule>>), CompilerError> {
+fn parse_contract(
+    source: &str,
+) -> Result<(String, Vec<String>, Vec<Pair<'_, Rule>>, HashMap<String, Expr>), CompilerError> {
     let mut pairs = CashScriptParser::parse(Rule::source_file, source)?;
     let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty source".to_string()))?;
     let mut inner = source_pair.into_inner();
@@ -164,6 +166,7 @@ fn parse_contract(source: &str) -> Result<(String, Vec<String>, Vec<Pair<'_, Rul
     let mut contract_name = None;
     let mut contract_params: Vec<String> = Vec::new();
     let mut functions = Vec::new();
+    let mut constants: HashMap<String, Expr> = HashMap::new();
 
     while let Some(pair) = inner.next() {
         if pair.as_rule() == Rule::contract_definition {
@@ -175,16 +178,45 @@ fn parse_contract(source: &str) -> Result<(String, Vec<String>, Vec<Pair<'_, Rul
                 contract_inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract parameters".to_string()))?;
             contract_params = parse_parameter_list(params_pair)?;
 
-            for fn_pair in contract_inner {
-                if fn_pair.as_rule() == Rule::function_definition {
-                    functions.push(fn_pair);
+            for item_pair in contract_inner {
+                let mut handled = false;
+                if item_pair.as_rule() == Rule::contract_item {
+                    let mut item_inner = item_pair.into_inner();
+                    if let Some(inner_item) = item_inner.next() {
+                        match inner_item.as_rule() {
+                            Rule::function_definition => {
+                                functions.push(inner_item);
+                                handled = true;
+                            }
+                            Rule::constant_definition => {
+                                let mut const_inner = inner_item.into_inner();
+                                let _type_name = const_inner
+                                    .next()
+                                    .ok_or_else(|| CompilerError::Unsupported("missing constant type".to_string()))?;
+                                let name_pair = const_inner
+                                    .next()
+                                    .ok_or_else(|| CompilerError::Unsupported("missing constant name".to_string()))?;
+                                let expr_pair = const_inner
+                                    .next()
+                                    .ok_or_else(|| CompilerError::Unsupported("missing constant initializer".to_string()))?;
+                                let expr = parse_expression(expr_pair)?;
+                                constants.insert(name_pair.as_str().to_string(), expr);
+                                handled = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                if handled {
+                    continue;
                 }
             }
         }
     }
 
     let contract_name = contract_name.ok_or_else(|| CompilerError::Unsupported("no contract definition".to_string()))?;
-    Ok((contract_name, contract_params, functions))
+    Ok((contract_name, contract_params, functions, constants))
 }
 
 fn function_name_from_pair(pair: &Pair<'_, Rule>) -> Option<String> {
@@ -195,6 +227,7 @@ fn function_name_from_pair(pair: &Pair<'_, Rule>) -> Option<String> {
 fn compile_function(
     pair: Pair<'_, Rule>,
     contract_params: &[String],
+    contract_constants: &HashMap<String, Expr>,
     options: CompileOptions,
 ) -> Result<(String, Vec<u8>), CompilerError> {
     let mut inner = pair.into_inner();
@@ -208,7 +241,7 @@ fn compile_function(
     let params =
         param_names.into_iter().enumerate().map(|(index, name)| (name, (param_count - 1 - index) as i64)).collect::<HashMap<_, _>>();
 
-    let mut env: HashMap<String, Expr> = HashMap::new();
+    let mut env: HashMap<String, Expr> = contract_constants.clone();
     let mut builder = ScriptBuilder::new();
 
     for stmt in inner {

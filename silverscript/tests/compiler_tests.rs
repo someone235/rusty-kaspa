@@ -129,6 +129,40 @@ fn compiles_basic_arithmetic_and_verifies() {
 }
 
 #[test]
+fn compiles_contract_constants_and_verifies() {
+    let source = r#"
+        contract Test() {
+            int constant MAX_SUPPLY = 1_000_000;
+
+            function main() {
+                require(MAX_SUPPLY == 1_000_000);
+            }
+        }
+    "#;
+
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "main");
+
+    let body = ScriptBuilder::new()
+        .add_i64(1_000_000)
+        .unwrap()
+        .add_i64(1_000_000)
+        .unwrap()
+        .add_op(OpNumEqual)
+        .unwrap()
+        .add_op(OpVerify)
+        .unwrap()
+        .add_op(OpTrue)
+        .unwrap()
+        .drain();
+
+    let expected = wrap_with_dispatch(body, selector);
+
+    assert_eq!(compiled.script, expected);
+    assert!(run_script_with_selector(compiled.script, selector).is_ok());
+}
+
+#[test]
 fn compiles_if_else_and_verifies() {
     let source = r#"
         contract Test() {
