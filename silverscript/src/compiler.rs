@@ -109,11 +109,54 @@ enum IntrospectionKind {
     OutputLockingBytecode,
 }
 
-pub fn compile_contract(
-    source: &str,
-    function_name: Option<&str>,
-    options: CompileOptions,
-) -> Result<CompiledContract, CompilerError> {
+pub fn compile_contract(source: &str, options: CompileOptions) -> Result<CompiledContract, CompilerError> {
+    let (contract_name, contract_params, functions) = parse_contract(source)?;
+    if functions.is_empty() {
+        return Err(CompilerError::Unsupported("contract has no functions".to_string()));
+    }
+
+    let mut compiled_functions = Vec::new();
+    for fn_pair in functions {
+        compiled_functions.push(compile_function(fn_pair, &contract_params, options)?);
+    }
+
+    let mut builder = ScriptBuilder::new();
+    let total = compiled_functions.len();
+    for (index, (_, script)) in compiled_functions.iter().enumerate() {
+        builder.add_op(OpDup)?;
+        builder.add_i64(index as i64)?;
+        builder.add_op(OpNumEqual)?;
+        builder.add_op(OpIf)?;
+        builder.add_op(OpDrop)?;
+        builder.add_ops(script)?;
+        if index == total - 1 {
+            builder.add_op(OpElse)?;
+            builder.add_op(OpDrop)?;
+            builder.add_op(OpFalse)?;
+            builder.add_op(OpVerify)?;
+        } else {
+            builder.add_op(OpElse)?;
+        }
+    }
+
+    for _ in 0..total {
+        builder.add_op(OpEndIf)?;
+    }
+
+    Ok(CompiledContract { contract_name, function_name: "dispatch".to_string(), script: builder.drain() })
+}
+
+pub fn function_branch_index(source: &str, function_name: &str) -> Result<i64, CompilerError> {
+    let (_, _, functions) = parse_contract(source)?;
+    for (index, pair) in functions.iter().enumerate() {
+        if function_name_from_pair(pair).map(|s| s == function_name).unwrap_or(false) {
+            return Ok(index as i64);
+        }
+    }
+    Err(CompilerError::Unsupported(format!("function '{function_name}' not found")))
+}
+
+fn parse_contract(source: &str) -> Result<(String, Vec<String>, Vec<Pair<'_, Rule>>), CompilerError> {
     let mut pairs = CashScriptParser::parse(Rule::source_file, source)?;
     let source_pair = pairs.next().ok_or_else(|| CompilerError::Unsupported("empty source".to_string()))?;
     let mut inner = source_pair.into_inner();
@@ -123,41 +166,25 @@ pub fn compile_contract(
     let mut functions = Vec::new();
 
     while let Some(pair) = inner.next() {
-        match pair.as_rule() {
-            Rule::contract_definition => {
-                let mut contract_inner = pair.into_inner();
-                let name_pair =
-                    contract_inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract name".to_string()))?;
-                contract_name = Some(name_pair.as_str().to_string());
+        if pair.as_rule() == Rule::contract_definition {
+            let mut contract_inner = pair.into_inner();
+            let name_pair = contract_inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract name".to_string()))?;
+            contract_name = Some(name_pair.as_str().to_string());
 
-                let params_pair =
-                    contract_inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract parameters".to_string()))?;
-                contract_params = parse_parameter_list(params_pair)?;
+            let params_pair =
+                contract_inner.next().ok_or_else(|| CompilerError::Unsupported("missing contract parameters".to_string()))?;
+            contract_params = parse_parameter_list(params_pair)?;
 
-                for fn_pair in contract_inner {
-                    if fn_pair.as_rule() == Rule::function_definition {
-                        functions.push(fn_pair);
-                    }
+            for fn_pair in contract_inner {
+                if fn_pair.as_rule() == Rule::function_definition {
+                    functions.push(fn_pair);
                 }
             }
-            _ => {}
         }
     }
 
     let contract_name = contract_name.ok_or_else(|| CompilerError::Unsupported("no contract definition".to_string()))?;
-
-    let target_fn = if let Some(name) = function_name {
-        functions
-            .into_iter()
-            .find(|pair| function_name_from_pair(pair).map(|s| s == name).unwrap_or(false))
-            .ok_or_else(|| CompilerError::Unsupported(format!("function '{name}' not found")))?
-    } else {
-        functions.into_iter().next().ok_or_else(|| CompilerError::Unsupported("contract has no functions".to_string()))?
-    };
-
-    let (fn_name, script) = compile_function(target_fn, &contract_params, options)?;
-
-    Ok(CompiledContract { contract_name, function_name: fn_name, script })
+    Ok((contract_name, contract_params, functions))
 }
 
 fn function_name_from_pair(pair: &Pair<'_, Rule>) -> Option<String> {

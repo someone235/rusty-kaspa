@@ -7,27 +7,26 @@ use kaspa_txscript::caches::Cache;
 use kaspa_txscript::opcodes::codes::*;
 use kaspa_txscript::script_builder::ScriptBuilder;
 use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
-use silverscript::compiler::{CompileOptions, compile_contract};
+use silverscript::compiler::{CompileOptions, compile_contract, function_branch_index};
 
-fn run_script(script: Vec<u8>) -> Result<(), kaspa_txscript_errors::TxScriptError> {
-    let reused_values = SigHashReusedValuesUnsync::new();
-    let sig_cache = Cache::new(10_000);
-    let mut vm = TxScriptEngine::<kaspa_consensus_core::tx::PopulatedTransaction<'static>, SigHashReusedValuesUnsync>::from_script(
-        &script,
-        &reused_values,
-        &sig_cache,
-        EngineFlags { covenants_enabled: true },
-    );
-    vm.execute()
+fn run_script_with_selector(script: Vec<u8>, selector: i64) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
+    run_script_with_sigscript(script, sigscript)
 }
 
-fn run_script_with_tx(script: Vec<u8>, lock_time: u64, sequence: u64) -> Result<(), kaspa_txscript_errors::TxScriptError> {
+fn run_script_with_tx(
+    script: Vec<u8>,
+    selector: i64,
+    lock_time: u64,
+    sequence: u64,
+) -> Result<(), kaspa_txscript_errors::TxScriptError> {
     let reused_values = SigHashReusedValuesUnsync::new();
     let sig_cache = Cache::new(10_000);
+    let sigscript = ScriptBuilder::new().add_i64(selector).unwrap().drain();
 
     let input = TransactionInput {
         previous_outpoint: TransactionOutpoint { transaction_id: TransactionId::from_bytes([0u8; 32]), index: 0 },
-        signature_script: vec![],
+        signature_script: sigscript,
         sequence,
         sig_op_count: 0,
     };
@@ -73,6 +72,26 @@ fn run_script_with_sigscript(script: Vec<u8>, sigscript: Vec<u8>) -> Result<(), 
     vm.execute()
 }
 
+fn selector_for(source: &str, function_name: &str) -> i64 {
+    function_branch_index(source, function_name).expect("selector resolved")
+}
+
+fn wrap_with_dispatch(body: Vec<u8>, selector: i64) -> Vec<u8> {
+    let mut builder = ScriptBuilder::new();
+    builder.add_op(OpDup).unwrap();
+    builder.add_i64(selector).unwrap();
+    builder.add_op(OpNumEqual).unwrap();
+    builder.add_op(OpIf).unwrap();
+    builder.add_op(OpDrop).unwrap();
+    builder.add_ops(&body).unwrap();
+    builder.add_op(OpElse).unwrap();
+    builder.add_op(OpDrop).unwrap();
+    builder.add_op(OpFalse).unwrap();
+    builder.add_op(OpVerify).unwrap();
+    builder.add_op(OpEndIf).unwrap();
+    builder.drain()
+}
+
 #[test]
 fn compiles_basic_arithmetic_and_verifies() {
     let source = r#"
@@ -83,9 +102,10 @@ fn compiles_basic_arithmetic_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "main");
 
-    let expected = ScriptBuilder::new()
+    let body = ScriptBuilder::new()
         .add_i64(1)
         .unwrap()
         .add_i64(2)
@@ -102,8 +122,10 @@ fn compiles_basic_arithmetic_and_verifies() {
         .unwrap()
         .drain();
 
+    let expected = wrap_with_dispatch(body, selector);
+
     assert_eq!(compiled.script, expected);
-    assert!(run_script(compiled.script).is_ok());
+    assert!(run_script_with_selector(compiled.script, selector).is_ok());
 }
 
 #[test]
@@ -120,9 +142,10 @@ fn compiles_if_else_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "main");
 
-    let expected = ScriptBuilder::new()
+    let body = ScriptBuilder::new()
         .add_i64(1)
         .unwrap()
         .add_i64(2)
@@ -147,8 +170,10 @@ fn compiles_if_else_and_verifies() {
         .unwrap()
         .drain();
 
+    let expected = wrap_with_dispatch(body, selector);
+
     assert_eq!(compiled.script, expected);
-    assert!(run_script(compiled.script).is_ok());
+    assert!(run_script_with_selector(compiled.script, selector).is_ok());
 }
 
 #[test]
@@ -161,12 +186,14 @@ fn compiles_time_op_csv_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "main");
 
-    let expected = ScriptBuilder::new().add_i64(10).unwrap().add_op(OpCheckSequenceVerify).unwrap().add_op(OpTrue).unwrap().drain();
+    let body = ScriptBuilder::new().add_i64(10).unwrap().add_op(OpCheckSequenceVerify).unwrap().add_op(OpTrue).unwrap().drain();
+    let expected = wrap_with_dispatch(body, selector);
 
     assert_eq!(compiled.script, expected);
-    assert!(run_script_with_tx(compiled.script, 0, 20).is_ok());
+    assert!(run_script_with_tx(compiled.script, selector, 0, 20).is_ok());
 }
 
 #[test]
@@ -181,9 +208,10 @@ fn compiles_reused_variables_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "main");
 
-    let expected = ScriptBuilder::new()
+    let body = ScriptBuilder::new()
         .add_i64(2)
         .unwrap()
         .add_i64(3)
@@ -216,8 +244,10 @@ fn compiles_reused_variables_and_verifies() {
         .unwrap()
         .drain();
 
+    let expected = wrap_with_dispatch(body, selector);
+
     assert_eq!(compiled.script, expected);
-    assert!(run_script(compiled.script).is_ok());
+    assert!(run_script_with_selector(compiled.script, selector).is_ok());
 }
 
 #[test]
@@ -230,8 +260,9 @@ fn compiles_sigscript_inputs_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().add_i64(3).unwrap().add_i64(4).unwrap().drain();
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "main");
+    let sigscript = ScriptBuilder::new().add_i64(3).unwrap().add_i64(4).unwrap().add_i64(selector).unwrap().drain();
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "sigscript test failed: {}", result.unwrap_err());
@@ -247,8 +278,9 @@ fn compiles_sigscript_reused_inputs_and_verifies() {
         }
     "#;
 
-    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().add_i64(3).unwrap().drain();
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "main");
+    let sigscript = ScriptBuilder::new().add_i64(3).unwrap().add_i64(selector).unwrap().drain();
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_ok(), "sigscript reuse test failed: {}", result.unwrap_err());
@@ -264,8 +296,9 @@ fn compiles_sigscript_inputs_and_fails_on_wrong_sum() {
         }
     "#;
 
-    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().add_i64(2).unwrap().add_i64(4).unwrap().drain();
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "main");
+    let sigscript = ScriptBuilder::new().add_i64(2).unwrap().add_i64(4).unwrap().add_i64(selector).unwrap().drain();
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_err());
@@ -281,8 +314,9 @@ fn compiles_sigscript_reused_inputs_and_fails_on_wrong_value() {
         }
     "#;
 
-    let compiled = compile_contract(source, Some("main"), CompileOptions::default()).expect("compile succeeds");
-    let sigscript = ScriptBuilder::new().add_i64(4).unwrap().drain();
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "main");
+    let sigscript = ScriptBuilder::new().add_i64(4).unwrap().add_i64(selector).unwrap().drain();
 
     let result = run_script_with_sigscript(compiled.script, sigscript);
     assert!(result.is_err());
