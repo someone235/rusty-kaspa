@@ -162,6 +162,614 @@ fn compiles_contract_constants_and_verifies() {
     assert!(run_script_with_selector(compiled.script, selector).is_ok());
 }
 
+fn assert_compiled_body(source: &str, body: Vec<u8>) {
+    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(source, "main");
+    let expected = wrap_with_dispatch(body, selector);
+    assert_eq!(compiled.script, expected);
+}
+
+#[test]
+fn compiles_opcode_builtins() {
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpSha256(bytes("msg")) == bytes("hash"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_data(b"msg")
+                .unwrap()
+                .add_op(OpSHA256)
+                .unwrap()
+                .add_data(b"hash")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxSubnetId() == bytes("subnet"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_op(OpTxSubnetId)
+                .unwrap()
+                .add_data(b"subnet")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxGas() == 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_op(OpTxGas)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpNumEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxPayloadLen() >= 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_op(OpTxPayloadLen)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpGreaterThanOrEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxPayloadSubstr(1, 3) == bytes("ok"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(1)
+                .unwrap()
+                .add_i64(3)
+                .unwrap()
+                .add_op(OpTxPayloadSubstr)
+                .unwrap()
+                .add_data(b"ok")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpOutpointTxId(0) == bytes("txid"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpOutpointTxId)
+                .unwrap()
+                .add_data(b"txid")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpOutpointIndex(0) == 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpOutpointIndex)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpNumEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxInputScriptSigLen(0) >= 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpTxInputScriptSigLen)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpGreaterThanOrEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxInputScriptSigSubstr(0, 0, 1) == bytes("sig"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_i64(1)
+                .unwrap()
+                .add_op(OpTxInputScriptSigSubstr)
+                .unwrap()
+                .add_data(b"sig")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxInputSeq(0) == bytes("seq"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpTxInputSeq)
+                .unwrap()
+                .add_data(b"seq")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxInputIsCoinbase(0) == 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpTxInputIsCoinbase)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpNumEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxInputSpkLen(0) >= 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpTxInputSpkLen)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpGreaterThanOrEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxInputSpkSubstr(0, 0, 1) == bytes("spk"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_i64(1)
+                .unwrap()
+                .add_op(OpTxInputSpkSubstr)
+                .unwrap()
+                .add_data(b"spk")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxOutputSpkLen(0) >= 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpTxOutputSpkLen)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpGreaterThanOrEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpTxOutputSpkSubstr(0, 0, 1) == bytes("out"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_i64(1)
+                .unwrap()
+                .add_op(OpTxOutputSpkSubstr)
+                .unwrap()
+                .add_data(b"out")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpAuthOutputCount(0) >= 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpAuthOutputCount)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpGreaterThanOrEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpAuthOutputIdx(0, 0) >= 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpAuthOutputIdx)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpGreaterThanOrEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpInputCovenantId(0) == bytes("cov"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpInputCovenantId)
+                .unwrap()
+                .add_data(b"cov")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpCovInputCount(bytes("c1")) >= 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_data(b"c1")
+                .unwrap()
+                .add_op(OpCovInputCount)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpGreaterThanOrEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpCovInputIdx(bytes("c1"), 0) >= 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_data(b"c1")
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpCovInputIdx)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpGreaterThanOrEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpCovOutCount(bytes("c1")) >= 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_data(b"c1")
+                .unwrap()
+                .add_op(OpCovOutCount)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpGreaterThanOrEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpCovOutputIdx(bytes("c1"), 0) >= 0);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_data(b"c1")
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpCovOutputIdx)
+                .unwrap()
+                .add_i64(0)
+                .unwrap()
+                .add_op(OpGreaterThanOrEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpNum2Bin(5, 2) == bytes("bin"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_i64(5)
+                .unwrap()
+                .add_i64(2)
+                .unwrap()
+                .add_op(OpNum2Bin)
+                .unwrap()
+                .add_data(b"bin")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpBin2Num(bytes("a")) == 5);
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_data(b"a")
+                .unwrap()
+                .add_op(OpBin2Num)
+                .unwrap()
+                .add_i64(5)
+                .unwrap()
+                .add_op(OpNumEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+        (
+            r#"
+                contract Test() {
+                    function main() {
+                        require(OpChainblockSeqCommit(bytes("block")) == bytes("commit"));
+                    }
+                }
+            "#,
+            ScriptBuilder::new()
+                .add_data(b"block")
+                .unwrap()
+                .add_op(OpChainblockSeqCommit)
+                .unwrap()
+                .add_data(b"commit")
+                .unwrap()
+                .add_op(OpEqual)
+                .unwrap()
+                .add_op(OpVerify)
+                .unwrap()
+                .add_op(OpTrue)
+                .unwrap()
+                .drain(),
+        ),
+    ];
+
+    for (source, body) in cases {
+        assert_compiled_body(source, body);
+    }
+}
+
 #[test]
 fn compiles_if_else_and_verifies() {
     let source = r#"

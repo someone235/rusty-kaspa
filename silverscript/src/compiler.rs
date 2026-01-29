@@ -904,6 +904,83 @@ fn compile_expr(
         }
         Expr::Array(_) => Err(CompilerError::Unsupported("array literals are only supported in LockingBytecodeNullData".to_string())),
         Expr::Call { name, args } => match name.as_str() {
+            "OpSha256" => compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpSHA256, false),
+            "OpTxSubnetId" => {
+                compile_opcode_call(name, args, 0, builder, env, params, options, visiting, stack_depth, OpTxSubnetId, true)
+            }
+            "OpTxGas" => compile_opcode_call(name, args, 0, builder, env, params, options, visiting, stack_depth, OpTxGas, true),
+            "OpTxPayloadLen" => {
+                compile_opcode_call(name, args, 0, builder, env, params, options, visiting, stack_depth, OpTxPayloadLen, true)
+            }
+            "OpTxPayloadSubstr" => {
+                compile_opcode_call(name, args, 2, builder, env, params, options, visiting, stack_depth, OpTxPayloadSubstr, true)
+            }
+            "OpOutpointTxId" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpOutpointTxId, true)
+            }
+            "OpOutpointIndex" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpOutpointIndex, true)
+            }
+            "OpTxInputScriptSigLen" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpTxInputScriptSigLen, true)
+            }
+            "OpTxInputScriptSigSubstr" => compile_opcode_call(
+                name,
+                args,
+                3,
+                builder,
+                env,
+                params,
+                options,
+                visiting,
+                stack_depth,
+                OpTxInputScriptSigSubstr,
+                true,
+            ),
+            "OpTxInputSeq" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpTxInputSeq, true)
+            }
+            "OpTxInputIsCoinbase" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpTxInputIsCoinbase, true)
+            }
+            "OpTxInputSpkLen" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpTxInputSpkLen, true)
+            }
+            "OpTxInputSpkSubstr" => {
+                compile_opcode_call(name, args, 3, builder, env, params, options, visiting, stack_depth, OpTxInputSpkSubstr, true)
+            }
+            "OpTxOutputSpkLen" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpTxOutputSpkLen, true)
+            }
+            "OpTxOutputSpkSubstr" => {
+                compile_opcode_call(name, args, 3, builder, env, params, options, visiting, stack_depth, OpTxOutputSpkSubstr, true)
+            }
+            "OpAuthOutputCount" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpAuthOutputCount, true)
+            }
+            "OpAuthOutputIdx" => {
+                compile_opcode_call(name, args, 2, builder, env, params, options, visiting, stack_depth, OpAuthOutputIdx, true)
+            }
+            "OpInputCovenantId" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpInputCovenantId, true)
+            }
+            "OpCovInputCount" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpCovInputCount, true)
+            }
+            "OpCovInputIdx" => {
+                compile_opcode_call(name, args, 2, builder, env, params, options, visiting, stack_depth, OpCovInputIdx, true)
+            }
+            "OpCovOutCount" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpCovOutCount, true)
+            }
+            "OpCovOutputIdx" => {
+                compile_opcode_call(name, args, 2, builder, env, params, options, visiting, stack_depth, OpCovOutputIdx, true)
+            }
+            "OpNum2Bin" => compile_opcode_call(name, args, 2, builder, env, params, options, visiting, stack_depth, OpNum2Bin, true),
+            "OpBin2Num" => compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpBin2Num, true),
+            "OpChainblockSeqCommit" => {
+                compile_opcode_call(name, args, 1, builder, env, params, options, visiting, stack_depth, OpChainblockSeqCommit, false)
+            }
             "bytes" => {
                 if args.len() != 1 {
                     return Err(CompilerError::Unsupported("bytes() expects a single argument".to_string()));
@@ -1206,7 +1283,24 @@ fn expr_is_bytes(expr: &Expr, env: &HashMap<String, Expr>) -> bool {
         Expr::New { name, .. } => {
             matches!(name.as_str(), "LockingBytecodeNullData" | "LockingBytecodeP2PKH" | "LockingBytecodeP2SH20")
         }
-        Expr::Call { name, .. } => matches!(name.as_str(), "bytes" | "blake2b") || name.starts_with("bytes"),
+        Expr::Call { name, .. } => {
+            matches!(
+                name.as_str(),
+                "bytes"
+                    | "blake2b"
+                    | "OpSha256"
+                    | "OpTxSubnetId"
+                    | "OpTxPayloadSubstr"
+                    | "OpOutpointTxId"
+                    | "OpTxInputScriptSigSubstr"
+                    | "OpTxInputSeq"
+                    | "OpTxInputSpkSubstr"
+                    | "OpTxOutputSpkSubstr"
+                    | "OpInputCovenantId"
+                    | "OpNum2Bin"
+                    | "OpChainblockSeqCommit"
+            ) || name.starts_with("bytes")
+        }
         Expr::Split { .. } => true,
         Expr::Binary { op: BinaryOp::Add, left, right } => expr_is_bytes(left, env) || expr_is_bytes(right, env),
         Expr::Introspection { kind, .. } => {
@@ -1216,6 +1310,33 @@ fn expr_is_bytes(expr: &Expr, env: &HashMap<String, Expr>) -> bool {
         Expr::Identifier(name) => env.get(name).map(|e| expr_is_bytes(e, env)).unwrap_or(false),
         _ => false,
     }
+}
+
+fn compile_opcode_call(
+    name: &str,
+    args: &[Expr],
+    expected_args: usize,
+    builder: &mut ScriptBuilder,
+    env: &HashMap<String, Expr>,
+    params: &HashMap<String, i64>,
+    options: CompileOptions,
+    visiting: &mut HashSet<String>,
+    stack_depth: &mut i64,
+    opcode: u8,
+    requires_covenants: bool,
+) -> Result<(), CompilerError> {
+    if args.len() != expected_args {
+        return Err(CompilerError::Unsupported(format!("{name}() expects {expected_args} argument(s)")));
+    }
+    if requires_covenants {
+        require_covenants(options, name)?;
+    }
+    for arg in args {
+        compile_expr(arg, env, params, builder, options, visiting, stack_depth)?;
+    }
+    builder.add_op(opcode)?;
+    *stack_depth += 1 - expected_args as i64;
+    Ok(())
 }
 
 fn compile_concat_operand(
