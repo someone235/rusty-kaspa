@@ -1,0 +1,21 @@
+pragma cashscript ^0.12.0;
+
+contract HodlVault(
+    pubkey ownerPk,
+    pubkey oraclePk,
+    int minBlock,
+    int priceTarget
+) {
+    function spend(sig ownerSig, datasig oracleSig, bytes oracleMessage) {
+        bytes4 blockHeightBin, bytes4 priceBin = oracleMessage.split(4);
+        int blockHeight = int(blockHeightBin);
+        int price = int(priceBin);
+
+        require(blockHeight >= minBlock);
+        require(tx.time >= blockHeight);
+        require(price >= priceTarget);
+
+        require(checkDataSig(oracleSig, oracleMessage, oraclePk));
+        require(checkSig(ownerSig, ownerPk));
+    }
+}

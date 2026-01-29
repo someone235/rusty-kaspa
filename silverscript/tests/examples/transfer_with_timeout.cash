@@ -1,0 +1,16 @@
+pragma cashscript ^0.12.0;
+
+contract TransferWithTimeout(
+    pubkey sender,
+    pubkey recipient,
+    int timeout
+) {
+    function transfer(sig recipientSig) {
+        require(checkSig(recipientSig, recipient));
+    }
+
+    function timeout(sig senderSig) {
+        require(checkSig(senderSig, sender));
+        require(tx.time >= timeout);
+    }
+}

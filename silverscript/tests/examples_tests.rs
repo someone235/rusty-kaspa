@@ -12,9 +12,15 @@ use kaspa_txscript::{EngineCtx, EngineFlags, TxScriptEngine};
 use rand::thread_rng;
 use secp256k1::Keypair;
 use silverscript::compiler::{CompileOptions, compile_contract, function_branch_index};
+use std::fs;
 
 fn build_null_data_script(tag: i64, message: &str) -> Vec<u8> {
     ScriptBuilder::new().add_op(OpReturn).unwrap().add_i64(tag).unwrap().add_data(message.as_bytes()).unwrap().drain()
+}
+
+fn load_example_source(name: &str) -> String {
+    let path = format!("{}/tests/examples/{name}", env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(&path).unwrap_or_else(|err| panic!("failed to read {path}: {err}"))
 }
 
 fn selector_for(source: &str, function_name: &str) -> i64 {
@@ -87,31 +93,10 @@ fn run_contract_with_tx_sequence(
 
 #[test]
 fn compiles_announcement_example_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("announcement.cash");
 
-        contract Announcement() {
-            function announce() {
-                bytes announcement = new LockingBytecodeNullData([
-                    27906,
-                    bytes('A contract may not injure a human being or, through inaction, allow a human being to come to harm.')
-                ]);
-
-                require(tx.outputs[0].value == 0);
-                require(tx.outputs[0].lockingBytecode == announcement);
-
-                int minerFee = 1000;
-                int changeAmount = tx.inputs[this.activeInputIndex].value - minerFee;
-                if (changeAmount >= minerFee) {
-                    require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
-                    require(tx.outputs[1].value == changeAmount);
-                }
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "announce");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "announce");
     let message = "A contract may not injure a human being or, through inaction, allow a human being to come to harm.";
     let announcement_script = build_null_data_script(27906, message);
     let input_value = 3000u64;
@@ -141,32 +126,10 @@ fn build_p2sh20_script(hash: &[u8]) -> Vec<u8> {
 
 #[test]
 fn compiles_hodl_vault_example_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("hodl_vault.cash");
 
-        contract HodlVault(
-            pubkey ownerPk,
-            pubkey oraclePk,
-            int minBlock,
-            int priceTarget
-        ) {
-            function spend(sig ownerSig, datasig oracleSig, bytes oracleMessage) {
-                bytes4 blockHeightBin, bytes4 priceBin = oracleMessage.split(4);
-                int blockHeight = int(blockHeightBin);
-                int price = int(priceBin);
-
-                require(blockHeight >= minBlock);
-                require(tx.time >= blockHeight);
-                require(price >= priceTarget);
-
-                require(checkDataSig(oracleSig, oracleMessage, oraclePk));
-                require(checkSig(ownerSig, ownerPk));
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "spend");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "spend");
 
     let owner = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
     let oracle = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
@@ -228,35 +191,10 @@ fn compiles_hodl_vault_example_and_verifies() {
 
 #[test]
 fn compiles_mecenas_example_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("mecenas.cash");
 
-        contract Mecenas(bytes20 recipient, bytes20 funder, int pledge) {
-            function receive() {
-                require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(recipient));
-
-                int minerFee = 1000;
-                int currentValue = tx.inputs[this.activeInputIndex].value;
-                int changeValue = currentValue - pledge - minerFee;
-
-                if (changeValue <= pledge + minerFee) {
-                    require(tx.outputs[0].value == currentValue - minerFee);
-                } else {
-                    require(tx.outputs[0].value == pledge);
-                    require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
-                    require(tx.outputs[1].value == changeValue);
-                }
-            }
-
-            function reclaim(pubkey pk, sig s) {
-                require(blake2b(pk) == funder);
-                require(checkSig(s, pk));
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "receive");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "receive");
     let recipient = [1u8; 20];
     let funder = [2u8; 20];
     let pledge = 2000i64;
@@ -287,35 +225,10 @@ fn compiles_mecenas_example_and_verifies() {
 
 #[test]
 fn compiles_mecenas_reclaim_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("mecenas.cash");
 
-        contract Mecenas(bytes20 recipient, bytes20 funder, int pledge) {
-            function receive() {
-                require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(recipient));
-
-                int minerFee = 1000;
-                int currentValue = tx.inputs[this.activeInputIndex].value;
-                int changeValue = currentValue - pledge - minerFee;
-
-                if (changeValue <= pledge + minerFee) {
-                    require(tx.outputs[0].value == currentValue - minerFee);
-                } else {
-                    require(tx.outputs[0].value == pledge);
-                    require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);
-                    require(tx.outputs[1].value == changeValue);
-                }
-            }
-
-            function reclaim(pubkey pk, sig s) {
-                require(blake2b(pk) == funder);
-                require(checkSig(s, pk));
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "reclaim");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "reclaim");
 
     let recipient = [1u8; 20];
     let funder_key = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
@@ -372,50 +285,10 @@ fn compiles_mecenas_reclaim_and_verifies() {
 
 #[test]
 fn compiles_mecenas_locktime_example_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("mecenas_locktime.cash");
 
-        contract Mecenas(
-            bytes20 recipient,
-            bytes20 funder,
-            int pledgePerBlock,
-            bytes8 initialBlock,
-        ) {
-            function receive() {
-                bytes25 recipientLockingBytecode = new LockingBytecodeP2PKH(recipient);
-                require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
-
-                int initial = int(initialBlock);
-                require(tx.time >= initial);
-
-                int passedBlocks = tx.locktime - initial;
-                int pledge = passedBlocks * pledgePerBlock;
-
-                int minerFee = 1000;
-                int currentValue = tx.inputs[this.activeInputIndex].value;
-                int changeValue = currentValue - pledge - minerFee;
-
-                if (changeValue <= pledgePerBlock + minerFee) {
-                    require(tx.outputs[0].value == currentValue - minerFee);
-                } else {
-                    require(tx.outputs[0].value == pledge);
-                    require(tx.outputs[1].value == changeValue);
-
-                    bytes bcValue = 8 + bytes8(tx.locktime) + this.activeBytecode.split(9)[1];
-                    bytes23 lockValue = new LockingBytecodeP2SH20(blake2b(bcValue));
-                    require(tx.outputs[1].lockingBytecode == lockValue);
-                }
-            }
-
-            function reclaim(pubkey pk, sig s) {
-                require(blake2b(pk) == funder);
-                require(checkSig(s, pk));
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "receive");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "receive");
     let recipient = [3u8; 20];
     let funder = [4u8; 20];
     let pledge_per_block = 100i64;
@@ -462,50 +335,10 @@ fn compiles_mecenas_locktime_example_and_verifies() {
 
 #[test]
 fn compiles_mecenas_locktime_reclaim_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("mecenas_locktime.cash");
 
-        contract Mecenas(
-            bytes20 recipient,
-            bytes20 funder,
-            int pledgePerBlock,
-            bytes8 initialBlock,
-        ) {
-            function receive() {
-                bytes25 recipientLockingBytecode = new LockingBytecodeP2PKH(recipient);
-                require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
-
-                int initial = int(initialBlock);
-                require(tx.time >= initial);
-
-                int passedBlocks = tx.locktime - initial;
-                int pledge = passedBlocks * pledgePerBlock;
-
-                int minerFee = 1000;
-                int currentValue = tx.inputs[this.activeInputIndex].value;
-                int changeValue = currentValue - pledge - minerFee;
-
-                if (changeValue <= pledgePerBlock + minerFee) {
-                    require(tx.outputs[0].value == currentValue - minerFee);
-                } else {
-                    require(tx.outputs[0].value == pledge);
-                    require(tx.outputs[1].value == changeValue);
-
-                    bytes bcValue = 8 + bytes8(tx.locktime) + this.activeBytecode.split(9)[1];
-                    bytes23 lockValue = new LockingBytecodeP2SH20(blake2b(bcValue));
-                    require(tx.outputs[1].lockingBytecode == lockValue);
-                }
-            }
-
-            function reclaim(pubkey pk, sig s) {
-                require(blake2b(pk) == funder);
-                require(checkSig(s, pk));
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "reclaim");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "reclaim");
 
     let recipient = [3u8; 20];
     let funder_key = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
@@ -564,19 +397,10 @@ fn compiles_mecenas_locktime_reclaim_and_verifies() {
 
 #[test]
 fn compiles_p2pkh_example_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("p2pkh.cash");
 
-        contract P2PKH(bytes20 pkh) {
-            function spend(pubkey pk, sig s) {
-                require(blake2b(pk) == pkh);
-                require(checkSig(s, pk));
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "spend");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "spend");
 
     let owner = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
     let pubkey_bytes = owner.x_only_public_key().0.serialize();
@@ -629,27 +453,10 @@ fn compiles_p2pkh_example_and_verifies() {
 
 #[test]
 fn compiles_transfer_with_timeout_transfer_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("transfer_with_timeout.cash");
 
-        contract TransferWithTimeout(
-            pubkey sender,
-            pubkey recipient,
-            int timeout
-        ) {
-            function transfer(sig recipientSig) {
-                require(checkSig(recipientSig, recipient));
-            }
-
-            function timeout(sig senderSig) {
-                require(checkSig(senderSig, sender));
-                require(tx.time >= timeout);
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "transfer");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "transfer");
 
     let sender = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
     let recipient = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
@@ -703,27 +510,10 @@ fn compiles_transfer_with_timeout_transfer_and_verifies() {
 
 #[test]
 fn compiles_transfer_with_timeout_timeout_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("transfer_with_timeout.cash");
 
-        contract TransferWithTimeout(
-            pubkey sender,
-            pubkey recipient,
-            int timeout
-        ) {
-            function transfer(sig recipientSig) {
-                require(checkSig(recipientSig, recipient));
-            }
-
-            function timeout(sig senderSig) {
-                require(checkSig(senderSig, sender));
-                require(tx.time >= timeout);
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "timeout");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "timeout");
 
     let sender = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
     let recipient = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
@@ -778,31 +568,10 @@ fn compiles_transfer_with_timeout_timeout_and_verifies() {
 
 #[test]
 fn compiles_covenant_escrow_example_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("covenant_escrow.cash");
 
-        contract Escrow(bytes20 arbiter, bytes20 buyer, bytes20 seller) {
-            function spend(pubkey pk, sig s) {
-                require(blake2b(pk) == arbiter);
-                require(checkSig(s, pk));
-
-                // Check that the correct amount is sent
-                int minerFee = 1000; // hardcoded fee
-                int amount = tx.inputs[this.activeInputIndex].value - minerFee;
-                require(tx.outputs[0].value == amount);
-
-                // Check that the transaction sends to either the buyer or the seller
-                bytes25 buyerLock = new LockingBytecodeP2PKH(buyer);
-                bytes25 sellerLock = new LockingBytecodeP2PKH(seller);
-                bool sendsToBuyer = tx.outputs[0].lockingBytecode == buyerLock;
-                bool sendsToSeller = tx.outputs[0].lockingBytecode == sellerLock;
-                require(sendsToBuyer || sendsToSeller);
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "spend");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "spend");
 
     let arbiter = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
     let arbiter_pk = arbiter.x_only_public_key().0.serialize();
@@ -863,39 +632,10 @@ fn compiles_covenant_escrow_example_and_verifies() {
 
 #[test]
 fn compiles_covenant_last_will_inherit_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("covenant_last_will.cash");
 
-        contract LastWill(bytes20 inheritor, bytes20 cold, bytes20 hot) {
-            function inherit(pubkey pk, sig s) {
-                require(this.age >= 180);
-                require(blake2b(pk) == inheritor);
-                require(checkSig(s, pk));
-            }
-
-            function cold(pubkey pk, sig s) {
-                require(blake2b(pk) == cold);
-                require(checkSig(s, pk));
-            }
-
-            function refresh(pubkey pk, sig s) {
-                require(blake2b(pk) == hot);
-                require(checkSig(s, pk));
-
-                // Check that the correct amount is sent
-                int minerFee = 1000; // hardcoded fee
-                int amount = tx.inputs[this.activeInputIndex].value - minerFee;
-                require(tx.outputs[0].value == amount);
-
-                // Check that the funds are sent back to the contract
-                bytes selfLock = tx.inputs[this.activeInputIndex].lockingBytecode;
-                require(tx.outputs[0].lockingBytecode == selfLock);
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "inherit");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "inherit");
 
     let inheritor = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
     let cold = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
@@ -969,39 +709,10 @@ fn compiles_covenant_last_will_inherit_and_verifies() {
 
 #[test]
 fn compiles_covenant_last_will_cold_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("covenant_last_will.cash");
 
-        contract LastWill(bytes20 inheritor, bytes20 cold, bytes20 hot) {
-            function inherit(pubkey pk, sig s) {
-                require(this.age >= 180);
-                require(blake2b(pk) == inheritor);
-                require(checkSig(s, pk));
-            }
-
-            function cold(pubkey pk, sig s) {
-                require(blake2b(pk) == cold);
-                require(checkSig(s, pk));
-            }
-
-            function refresh(pubkey pk, sig s) {
-                require(blake2b(pk) == hot);
-                require(checkSig(s, pk));
-
-                // Check that the correct amount is sent
-                int minerFee = 1000; // hardcoded fee
-                int amount = tx.inputs[this.activeInputIndex].value - minerFee;
-                require(tx.outputs[0].value == amount);
-
-                // Check that the funds are sent back to the contract
-                bytes selfLock = tx.inputs[this.activeInputIndex].lockingBytecode;
-                require(tx.outputs[0].lockingBytecode == selfLock);
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "cold");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "cold");
 
     let inheritor = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
     let cold = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
@@ -1075,39 +786,10 @@ fn compiles_covenant_last_will_cold_and_verifies() {
 
 #[test]
 fn compiles_covenant_last_will_refresh_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("covenant_last_will.cash");
 
-        contract LastWill(bytes20 inheritor, bytes20 cold, bytes20 hot) {
-            function inherit(pubkey pk, sig s) {
-                require(this.age >= 180);
-                require(blake2b(pk) == inheritor);
-                require(checkSig(s, pk));
-            }
-
-            function cold(pubkey pk, sig s) {
-                require(blake2b(pk) == cold);
-                require(checkSig(s, pk));
-            }
-
-            function refresh(pubkey pk, sig s) {
-                require(blake2b(pk) == hot);
-                require(checkSig(s, pk));
-
-                // Check that the correct amount is sent
-                int minerFee = 1000; // hardcoded fee
-                int amount = tx.inputs[this.activeInputIndex].value - minerFee;
-                require(tx.outputs[0].value == amount);
-
-                // Check that the funds are sent back to the contract
-                bytes selfLock = tx.inputs[this.activeInputIndex].lockingBytecode;
-                require(tx.outputs[0].lockingBytecode == selfLock);
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "refresh");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "refresh");
 
     let inheritor = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
     let cold = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
@@ -1186,44 +868,10 @@ fn compiles_covenant_last_will_refresh_and_verifies() {
 
 #[test]
 fn compiles_covenant_mecenas_example_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("covenant_mecenas.cash");
 
-        contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
-            function receive() {
-                require(this.age >= period);
-
-                // Check that the first output sends to the recipient
-                bytes25 recipientLockingBytecode = new LockingBytecodeP2PKH(recipient);
-                require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
-
-                // Calculate the value that's left
-                int minerFee = 1000;
-                int currentValue = tx.inputs[this.activeInputIndex].value;
-                int changeValue = currentValue - pledge - minerFee;
-
-                // If there is not enough left for *another* pledge after this one,
-                // we send the remainder to the recipient. Otherwise we send the
-                // pledge to the recipient and the change back to the contract
-                if (changeValue <= pledge + minerFee) {
-                    require(tx.outputs[0].value == currentValue - minerFee);
-                } else {
-                    require(tx.outputs[0].value == pledge);
-                    bytes changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
-                    require(tx.outputs[1].lockingBytecode == changeBytecode);
-                    require(tx.outputs[1].value == changeValue);
-                }
-            }
-
-            function reclaim(pubkey pk, sig s) {
-                require(blake2b(pk) == funder);
-                require(checkSig(s, pk));
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "receive");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "receive");
     let recipient = [21u8; 20];
     let funder = [22u8; 20];
     let pledge = 2_000i64;
@@ -1257,44 +905,10 @@ fn compiles_covenant_mecenas_example_and_verifies() {
 
 #[test]
 fn compiles_covenant_mecenas_reclaim_and_verifies() {
-    let source = r#"
-        pragma cashscript ^0.12.0;
+    let source = load_example_source("covenant_mecenas.cash");
 
-        contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {
-            function receive() {
-                require(this.age >= period);
-
-                // Check that the first output sends to the recipient
-                bytes25 recipientLockingBytecode = new LockingBytecodeP2PKH(recipient);
-                require(tx.outputs[0].lockingBytecode == recipientLockingBytecode);
-
-                // Calculate the value that's left
-                int minerFee = 1000;
-                int currentValue = tx.inputs[this.activeInputIndex].value;
-                int changeValue = currentValue - pledge - minerFee;
-
-                // If there is not enough left for *another* pledge after this one,
-                // we send the remainder to the recipient. Otherwise we send the
-                // pledge to the recipient and the change back to the contract
-                if (changeValue <= pledge + minerFee) {
-                    require(tx.outputs[0].value == currentValue - minerFee);
-                } else {
-                    require(tx.outputs[0].value == pledge);
-                    bytes changeBytecode = tx.inputs[this.activeInputIndex].lockingBytecode;
-                    require(tx.outputs[1].lockingBytecode == changeBytecode);
-                    require(tx.outputs[1].value == changeValue);
-                }
-            }
-
-            function reclaim(pubkey pk, sig s) {
-                require(blake2b(pk) == funder);
-                require(checkSig(s, pk));
-            }
-        }
-    "#;
-
-    let compiled = compile_contract(source, CompileOptions::default()).expect("compile succeeds");
-    let selector = selector_for(source, "reclaim");
+    let compiled = compile_contract(&source, CompileOptions::default()).expect("compile succeeds");
+    let selector = selector_for(&source, "reclaim");
 
     let recipient = [21u8; 20];
     let funder_key = Keypair::new(secp256k1::SECP256K1, &mut thread_rng());
