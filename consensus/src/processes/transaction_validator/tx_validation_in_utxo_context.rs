@@ -273,16 +273,7 @@ mod tests {
 
         let signature_prefix =
             ScriptBuilder::new().add_data(&vec![1u8; SCRIPT_UNITS_PER_COMPUTE_BUDGET_UNIT as usize]).unwrap().drain();
-        let redeem_script = ScriptBuilder::new()
-            .add_op(OpDup)
-            .unwrap()
-            .add_op(OpDrop)
-            .unwrap()
-            .add_op(OpDrop)
-            .unwrap()
-            .add_op(OpTrue)
-            .unwrap()
-            .drain();
+        let redeem_script = ScriptBuilder::new().add_op(OpDup).unwrap().add_op(OpDrop).unwrap().drain();
         let script_public_key = pay_to_script_hash_script(&redeem_script);
         let outputs = vec![TransactionOutput {
             value: 1,
